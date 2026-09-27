@@ -1,0 +1,130 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5fd2466..56435f1 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -122,7 +122,7 @@ class DEOptimizer:
+         done = False
+         
+         # SHADE (Success-History Adaptive Differential Evolution) state
+-        memory_size = 5
++        memory_size = 10
+         memory_F = np.full(memory_size, 0.5)
+         memory_CR = np.full(memory_size, 0.5)
+         memory_idx = 0
+diff --git a/hyper_agent.py b/hyper_agent.py
+index f12c6f5..d22d3e5 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -93,24 +93,34 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+    - Change the population structure
+    - Add new mechanisms (archive, migration, restart)
+ 
+-### ALGORITHM REPLACEMENT MANDATE (HIGHEST PRIORITY)
++### ALGORITHM REPLACEMENT MANDATE (HIGHEST PRIORITY) - IMPROVED FOR GEN 51+
+ 
+-If the latest generation's all_patch.diff only tweaks DE parameters (F, CR, w, c1, c2), adjusts mutation/crossover operators within DE, or makes incremental improvements to the existing DE implementation WITHOUT changing the underlying algorithm class, then you MUST instruct the Task Agent to implement a completely different algorithm. Specifically:
++**Recent failure pattern identified:** gen_49 implemented JADE-style parameter adaptation but remained a DE-variant. gen_50 added OBL and LPSR but again remained a SHADE/DE-variant. The core search mechanism is STILL differential evolution. This is a repeated failure to replace the algorithm family.
+ 
+-- If current is DE, switch to CMA-ES, SHADE, JADE, or GLPSO (pick ONE and implement it fully)
+-- If current is PSO, switch to DE, CMA-ES, or SHADE
+-- If current is already SHADE/JADE, switch to CMA-ES or GLPSO
++**This generation you MUST explicitly instruct the Task Agent to implement a fundamentally different algorithm family: either CMA-ES or GLPSO.** Do NOT accept any DE-family variant (DE, jDE, SHADE, JADE, L-SHADE, SaNSDE, CoDE) as satisfying the algorithm replacement requirement.
+ 
+-**Do NOT allow the Task Agent to stay in the same algorithm family for more than 2 consecutive generations.** The Task Agent's patch MUST change the core algorithm class or introduce a fundamentally new search mechanism (e.g., covariance matrix adaptation, archive-based success-history adaptation, comprehensive learning) with at least 50-100 lines of new code.
++If the latest generation's all_patch.diff still uses DE mutation/crossover as the primary search operator, then you MUST tell the Task Agent: "Your patch is rejected because it remains a DE-family algorithm. Implement CMA-ES from scratch with evolution paths p_sigma/p_c, covariance matrix C, step-size sigma, and weighted recombination. OR implement GLPSO from scratch with comprehensive learning exemplars and refreshing gap."
++
++### HARD REQUIREMENTS FOR THE NEXT TASK AGENT PATCH
++- The optimizer must maintain either:
++  - **CMA-ES**: mean vector `m`, covariance `C`, step-size `sigma`, evolution paths `p_sigma` and `p_c`, rank-one/rank-mu covariance update, and a sample-evaluate-recombine loop. At least 100 lines of NEW covariance-adaptation logic.
++  - **GLPSO**: velocity vectors, personal bests, exemplar selection from the population, refreshing gap, and PSO position/velocity updates. At least 100 lines of NEW comprehensive-learning logic.
++- Remove or bypass the existing DE/SHADE mutation-crossover-selection loop for the main search; it must not be the driving operator.
++- Preserve `DEOptimizer` class name, `__init__` signature, `optimize()` signature, and `stats` keys (`gbest_f`, `initial_gbest_f`, `gbest`, `evals`, `iterations`).
+ 
+ ### VERIFYING THE TASK AGENT ACTUALLY CHANGED THE ALGORITHM
+ After the Task Agent produces a patch, verify:
+-- [ ] The patch changes ec_algorithm.py substantially (not just parameter values)
+-- [ ] The patch introduces a new algorithm mechanism (e.g., CMA-ES covariance update, SHADE success-history memory, JADE archive, GLPSO comprehensive learning)
++- [ ] The patch does NOT use binomial/exp crossover with DE/current-to-pbest mutation as the core loop
++- [ ] CMA-ES: the patch contains `C =` covariance updates, `p_sigma =`, `p_c =`, and `sigma *` sampling (or equivalent)
++- [ ] GLPSO: the patch contains exemplar refreshing, comprehensive learning velocity update, and a `refresh_gap` / `m` counter
+ - [ ] The interface to dqn_de_util.py is preserved (DEOptimizer class, __init__ signature, optimize signature)
+-- [ ] The code was actually tested and runs without errors
++- [ ] There is at least 100 lines of NEW algorithm logic (not just reordering existing DE code)
++- [ ] The code was actually tested and runs without errors (check for `python -m py_compile` or a test script in chat history)
++
++If the Task Agent only tweaked parameters or produced another DE-variant, provide negative feedback in your message and explicitly demand a full CMA-ES or GLPSO implementation in the next generation.
+ 
+-If the Task Agent only tweaked parameters again, provide negative feedback in your message and explicitly demand an algorithm replacement.
++### SPECIFIC NEXT-GEN INSTRUCTION TO INJECT INTO TASK_AGENT.PY
++If the latest patch is a DE-variant, add this line to task_agent.py: "**ALGORITHM FAMILY REJECTED: You are still using DE/SHADE/JADE. Implement CMA-ES or GLPSO with at least 100 new lines of algorithm-specific code (covariance adaptation or comprehensive learning).**"
+ 
+ 4. **Actually modify the code** - not just describe changes
+ 
+diff --git a/task_agent.py b/task_agent.py
+index a7bbaa2..9e802f3 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -37,13 +37,33 @@ Task input:
+ 
+ You are an expert optimization algorithm researcher. You MUST modify the evolutionary algorithm code in /hada/metabbo/ec_algorithm.py and/or /hada/metabbo/param_controller.py to improve performance.
+ 
+-### MANDATORY: TRY DIFFERENT ALGORITHMS
+-Do NOT just tweak parameters of the current DE. If the score has plateaued, you MUST replace the core algorithm with a fundamentally different one. For bbob_unconstrained, consider implementing:
+-- CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
+-- SHADE (Success-History based Adaptive DE)
+-- JADE (Adaptive DE with optional external archive)
+-- GLPSO (Comprehensive Learning PSO)
+-- ES (Evolution Strategy with covariance adaptation)
++### ALGORITHM REPLACEMENT REQUIREMENT (MANDATORY - HIGHEST PRIORITY)
++The previous generation's patch only added Opposition-Based Learning (OBL) and Linear Population Size Reduction (LPSR) to the existing SHADE/DE. This is NOT acceptable. You MUST replace the core evolutionary algorithm with a fundamentally different one this generation.
++
++**Your assignment: Implement EITHER CMA-ES OR GLPSO from scratch inside the `DEOptimizer` class.**
++
++For **CMA-ES**, you must implement:
++- A mean vector `m`, step-size `sigma`, and covariance matrix `C` (initialized as identity)
++- Evolution paths `p_sigma` and `p_c` updated using learning rates `c_sigma` and `c_c`
++- Rank-one and rank-μ covariance matrix adaptation with learning rates `c_1` and `c_mu`
++- Sampling new solutions from `m + sigma * N(0, C)`
++- Selection and weighted recombination of top `mu` solutions
++- Step-size control using the cumulative path length
++
++For **GLPSO**, you must implement:
++- A comprehensive learning strategy where each particle's velocity is updated using the personal best of a randomly selected exemplar from the population
++- A refreshing gap mechanism to reassign exemplars when stagnation is detected
++- Standard PSO inertia weight `w`, cognitive `c1`, and social `c2` parameters
++- Velocity clamping and boundary handling
++
++**HARD REQUIREMENTS:**
++- Write at least 100 new lines of code implementing the new algorithm's core mechanisms (not just parameter tweaks).
++- Do NOT keep DE mutation/crossover as the primary search operator. The new algorithm MUST be structurally different (covariance adaptation OR comprehensive learning).
++- Do NOT just add a new mechanism on top of the existing DE loop. Replace the main search loop with the new algorithm's update rules.
++- The `DEOptimizer` class name, `__init__` signature, and `optimize()` signature MUST remain unchanged so the external evaluation still works.
++- Keep the `stats` output keys (`gbest_f`, `initial_gbest_f`, `gbest`, etc.) identical.
++
++**If you do not replace the algorithm, your submission will be considered a failure.**
+ 
+ ### INTERFACE COMPATIBILITY (CRITICAL - DO NOT BREAK EVAL)
+ The file /hada/domains/bbob_unconstrained/dqn_de_util.py imports your module and calls:
+@@ -61,12 +81,19 @@ Therefore you MUST keep the class name `DEOptimizer`, its __init__ signature, an
+ - [ ] Run a quick test to verify the optimizer works
+ - [ ] Changes are incremental and don't break existing functionality
+ 
++### REJECTION CRITERIA (YOUR PATCH WILL BE REJECTED IF ANY OF THESE ARE TRUE)
++- [ ] You only changed numeric constants (F, CR, swarm_size, etc.)
++- [ ] You kept the DE/SHADE/JADE mutation-crossover-selection as the core loop
++- [ ] You added a mechanism (OBL, LPSR, restart) on top of the existing DE loop without replacing the core algorithm
++- [ ] You did not call `editor str_replace` on `/hada/metabbo/ec_algorithm.py` (viewing is NOT enough)
++- [ ] You introduced methods/variables that don't exist or broke the DEOptimizer/optimize interface
++
+ ### HOW TO PROCEED
+ 1. First, READ the current /hada/metabbo/ec_algorithm.py and /hada/metabbo/param_controller.py
+ 2. READ /hada/domains/bbob_unconstrained/dqn_de_util.py to see how your code is evaluated
+-3. Decide on ONE major algorithmic change (e.g., switch from DE to CMA-ES, or add SHADE archive with success-history adaptation)
+-4. Use the `editor` tool with command='str_replace' to actually modify ec_algorithm.py and/or param_controller.py
+-5. Test your changes with a small Python script before finishing
++3. Implement EITHER **CMA-ES** (covariance matrix adaptation, evolution paths, weighted recombination) OR **GLPSO** (comprehensive learning, exemplar refreshing gap) directly inside `DEOptimizer.optimize()`. Write at least 100 lines of NEW algorithm-specific code.
++4. Use the `editor` tool with command='str_replace' to actually modify ec_algorithm.py. You MUST call str_replace on ec_algorithm.py at least once.
++5. Test your changes with `python -m py_compile /hada/metabbo/ec_algorithm.py` and a small functional test that creates DEOptimizer and calls optimize() with a simple quadratic function.
+ 6. Return your response in the required JSON format
+ 
+ Respond in JSON format with the following schema:

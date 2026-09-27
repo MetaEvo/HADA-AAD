@@ -1,0 +1,22 @@
+diff --git a/task_agent.py b/task_agent.py
+index 2f630a8..cd005b0 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -77,7 +77,16 @@ So your modified `ec_algorithm.py` MUST still provide:
+ ### ⚠️ ABSOLUTE REQUIREMENT: YOU MUST REPLACE THE ALGORITHM, NOT JUST TWEAK PARAMETERS
+ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. Scores have plateaued because prior attempts only tweaked parameters (w, c1, c2, F, CR). **THIS IS A FAILURE MODE.**
+ 
+-**CURRENT STATUS (gen_37):** The current `ec_algorithm.py` already contains a JADE/SHADE-inspired adaptive DE (external archive, current-to-pbest mutation, success-history F/CR memory). It scored **0.8861**, which is **BELOW the best-known score of 0.93121**. Both plain parameter tweaks AND SHADE/JADE-style DE variants have now been tried and plateaued. **DO NOT submit another DE variant with the same mutation/archive/memory recipe.** You MUST switch to a fundamentally different algorithm family or add a major new layer (e.g., CMA-ES core, CMA-ES local search on top of DE, restart with latin hypercube, niching, ensemble of DE+CMA-ES).
++**CURRENT STATUS (gen_74):** The current `ec_algorithm.py` already contains a JADE/SHADE-inspired adaptive DE with external archive, current-to-pbest mutation, success-history F/CR memory, Latin-Hypercube init, and **L-SHADE Linear Population Size Reduction (LPSR)**. The latest generation (gen_74) ALSO added an `LSHADEHeuristicController` and scored only **0.8846** — **BELOW the best-known score of 0.93121 and still among the worst of the recent plateau (0.85-0.93)**. Every DE-family variant (DE, JADE, SHADE, L-SHADE/LPSR) has now been tried and ALL have plateaued at or below ~0.93.
++
++**🚨 ABSOLUTE MANDATE: DO NOT SUBMIT ANY DE/JADE/SHADE/L-SHADE VARIANT THIS GENERATION.** The evidence across 74 generations is overwhelming: tweaking DE-family internals (mutation, archive, memory, LPSR) does NOT break the ~0.93 ceiling. **You MUST implement a fundamentally different algorithm family: CMA-ES (Covariance Matrix Adaptation Evolution Strategy) — ideally with IPOP restarts.** If you cannot implement full CMA-ES, implement a **hybrid** (e.g., DE + CMA-ES local search, or restart-with-CMA-ES-refinement), or another entirely non-DE method (e.g., Evolution Strategies with covariance adaptation, Bayesian Optimization, or Particle Swarm with CMA-ES-like covariance).
++
++**Concrete evidence for why DE variants fail:**
++- gen_50: 0.9289 (SHADE/LPSR)
++- gen_62: 0.8549 (per-individual loops, slow)
++- gen_74: 0.8846 (L-SHADE + LPSR + LSHADE controller)
++- Best known: 0.93121
++All DE-family scores hover in the same band. **The only way to break out is a different algorithm family.**
+ 
+ **STRATEGIC RECOMMENDATION: Implement CMA-ES (Covariance Matrix Adaptation Evolution Strategy), ideally with restarts (IPOP-CMA-ES or BIPOP-CMA-ES).** CMA-ES is the state-of-the-art for continuous black-box optimization on BBOB and is very likely to beat the current DE variants. If you instead keep a DE-style algorithm, it must include a clearly novel mechanism that is not just another archive + pbest + memory (e.g., ensemble of multiple mutation strategies chosen adaptively, competitive parameter control, or a restart/local-search hybridization).
+ 

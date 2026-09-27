@@ -1,0 +1,13 @@
+diff --git a/task_agent.py b/task_agent.py
+index a7bbaa2..8c7c87f 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -40,7 +40,7 @@ You are an expert optimization algorithm researcher. You MUST modify the evoluti
+ ### MANDATORY: TRY DIFFERENT ALGORITHMS
+ Do NOT just tweak parameters of the current DE. If the score has plateaued, you MUST replace the core algorithm with a fundamentally different one. For bbob_unconstrained, consider implementing:
+ - CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
+-- SHADE (Success-History based Adaptive DE)
++- CMA-ES (REQUIRED)
+ - JADE (Adaptive DE with optional external archive)
+ - GLPSO (Comprehensive Learning PSO)
+ - ES (Evolution Strategy with covariance adaptation)

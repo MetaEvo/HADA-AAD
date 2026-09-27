@@ -1,0 +1,13 @@
+diff --git a/task_agent.py b/task_agent.py
+index a15ea6c..2f493ff 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -16,7 +16,7 @@ def _domain_algorithm_guidance(domain: str) -> str:
+     """Return domain-specific algorithm replacement guidance."""
+     if 'bbob_unconstrained' in domain or 'bbob' in domain:
+         return """
+-### 🚨🚨🚨 CRITICAL: THE CURRENT CODE IS **ALREADY SHADE** - DO NOT TWEAK IT FURTHER 🚨🚨🚨
++### 🚨🚨🚨 CRITICAL: THE CURRENT CODE IS **PARTIAL SHADE** - DO NOT TWEAK IT FURTHER 🚨🚨🚨
+ 
+ Look at `/hada/metabbo/ec_algorithm.py`. If you see `M_F`, `M_CR`, `archive`, `current-to-pbest/1`, `k_mem`, `H =`, `memory_index` — that means **SHADE is already implemented**. The last 30+ generations of task agents have only been tweaking SHADE constants (H, pbest_p, archive_cap, F/CR sampling). This has NOT improved the score. **Further SHADE tweaks are categorically REJECTED.**
+ 

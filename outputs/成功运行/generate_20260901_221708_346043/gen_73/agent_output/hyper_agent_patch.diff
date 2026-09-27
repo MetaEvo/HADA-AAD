@@ -1,0 +1,74 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 26e6bef..2c154b5 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -159,6 +159,10 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ 4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
+ 
++5. **DISTINGUISH PARTIAL STRUCTURAL PROGRESS FROM PARAMETER TWEAKS** - CRITICAL.
++   A diff that replaces baseline DE with plain SHADE (success-history memory, current-to-pbest/1 mutation, external archive) is **GOOD structural progress**, even if the score is below the best. In that case the next generation's prompt should say: "Gen_N made the RIGHT structural move (SHADE) but scored X because it is MISSING the following L-SHADE pieces: (a) LPSR shrinking current_n linearly with progress, (b) stagnation-triggered restart of worst individuals. YOUR #1 JOB is to add those two missing mechanisms."
++   Also remember: each generation STARTS FRESH from baseline DE - the working tree does NOT persist previous generations' SHADE code. So if the new prompt says "the file already has SHADE, just add LPSR", the Task Agent will look at the file, see baseline DE, and get confused. The prompt must say "Your starting point is baseline DE. Implement the FULL L-SHADE (all 5 components) in one go."
++
+ Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+ 
+ GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code.
+diff --git a/hyper_agent_improvements.md b/hyper_agent_improvements.md
+index 8cdfcfb..1080afa 100644
+--- a/hyper_agent_improvements.md
++++ b/hyper_agent_improvements.md
+@@ -18,3 +18,22 @@
+ - Prior generations plateaued because Task Agents only tweaked PSO/DE parameter values instead of replacing the algorithm.
+ - When Task Agents finally attempted structural changes (L-SHADE), the first implementation was too slow (nested Python loops) and timed out, scoring zero.
+ - These prompt changes should push future Task Agents to: (1) actually replace the search algorithm, and (2) do so with vectorized NumPy code that runs fast enough to pass the evaluation timeout.
++
++---
++
++## Update 2026-08-29 (gen_63 preparation, domain: bbob_unconstrained)
++
++### Analysis
++- **Latest generation (gen_62) score**: 0.8549
++- **Task Agent's change in gen_62**: Replaced baseline DE with **plain SHADE** (success-history memory, current-to-pbest/1 mutation, external archive, weighted Lehmer mean updates). This is **GOOD structural progress** but scored below the 0.93121 best from gen_11's full **L-SHADE**.
++- **Root cause of the gap**: gen_62's plain SHADE was missing (a) **Linear Population Size Reduction (LPSR)** and (b) **stagnation-triggered restart**.
++
++### Changes made
++1. **task_agent.py**: Added a "LATEST GENERATION ANALYSIS" section that clearly tells the Task Agent:
++   - gen_62's plain SHADE was good but incomplete; the winning gen_11 L-SHADE had 5 specific components (listed with the exact LPSR formula).
++   - The working tree starts from **baseline DE** each generation (previous SHADE does NOT persist) - correcting a dangerous misconception.
++   - "YOUR #1 PRIORITY THIS GENERATION: Implement the FULL L-SHADE (all 5 components) in one go."
++
++2. **hyper_agent.py**: Added ANALYSIS GUIDANCE item #5 - **DISTINGUISH PARTIAL STRUCTURAL PROGRESS FROM PARAMETER TWEAKS**:
++   - Plain SHADE replacing DE is GOOD progress; next prompt should say "Gen_N made the RIGHT structural move but scored X because it is MISSING these L-SHADE pieces..."
++   - Warns future Meta Agents that each generation starts fresh from baseline DE, so never say "just add LPSR to existing SHADE".
+diff --git a/task_agent.py b/task_agent.py
+index cf34c9d..a58ceae 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -88,10 +88,26 @@ The **BEST-KNOWN SCORE is 0.93121** achieved by **generation 11's L-SHADE implem
+ 
+ **READ THAT DIFF FIRST.** It shows exactly what a winning structural change looks like: SHADE memory (memory_F/memory_CR), current-to-pbest/1 mutation, external archive, LPSR (shrinking population via `current_n`), and restart on stagnation.
+ 
++### 🎯 LATEST GENERATION ANALYSIS (gen_62 => score 0.8549):
++The most recent Task Agent implemented **plain SHADE** correctly (success-history memory, current-to-pbest/1 mutation, external archive, weighted Lehmer mean updates). **That is GOOD progress** - but it scored **0.8549**, which is still **BELOW the 0.93121 best** (gen_11's full L-SHADE).
++
++**IMPORTANT - YOUR ACTUAL STARTING POINT:** The current `/hada/metabbo/ec_algorithm.py` in your working tree is the **BASELINE DE** (fixed F=0.5/CR=0.5, rand/1 mutation, tournament selection, greedy selection). The previous SHADE implementation does NOT persist across generations - you start fresh from baseline DE each time. So do NOT assume SHADE is already there.
++
++**THE GEN_11 WINNER HAD ALL OF THESE (score 0.93121):**
++1. **SHADE success-history memory** - `memory_F`/`memory_CR` arrays (size ~10), per-individual F sampled from Cauchy around `memory_F[r]`, CR sampled from Gaussian around `memory_CR[r]`, and memory updated with weighted Lehmer mean of successful F and weighted mean of successful CR.
++2. **current-to-pbest/1 mutation** - `mutant = pop[i] + F_i * (pbest_x - pop[i]) + F_i * (pop[r1] - x_r2)` where `pbest_x` is randomly chosen from the top `p` fraction (p ~ 0.1-0.2), r1 from population, r2 from population-or-archive.
++3. **External archive** - rejected parents are stored in a bounded archive (capacity ~2*pop_size) and used as `x_r2`.
++4. **Linear Population Size Reduction (LPSR)** - shrink `current_n` linearly as `progress = evals/max_evals` increases:
++   `target_n = max(min_pop_size, int(round(pop_size + (min_pop_size - pop_size) * progress)))`
++   then removes the worst individuals to reach `target_n`.
++5. **Stagnation-triggered restart** - reinitialize ~15% of the worst individuals (small Gaussian perturbation around their current positions) when `gbest_f` has not improved for ~5 iterations.
++
++**YOUR #1 PRIORITY THIS GENERATION: Implement the FULL L-SHADE (all 5 components above) in one go**, because your starting point is baseline DE. Gen_62's plain SHADE scored 0.8549 precisely because it was missing components 4 and 5. If for some reason the working tree already has SHADE memory + archive + pbest but lacks LPSR/restart, then just ADD those two missing mechanisms.
++
+ ### ⚠️ NEW FAILURE MODE TO AVOID (gen_17 regression):
+ **Making constants configurable via the controller is NOT a structural change.** In gen_17, a Task Agent took an existing JADE implementation and only changed hardcoded values (`0.2` pbest pool → `params.get('pbest_rate', 0.2)`) to be controller-driven. This scored **0.8157**, far BELOW the best 0.93121. Do NOT repeat this - plumbing parameters from the controller to existing constants does NOT improve the algorithm.
+ 
+-**Your job is to make the algorithm itself better.** If the current file is baseline DE, implement L-SHADE (see gen_11 diff). If L-SHADE is already present, add a NEW mechanism on top:
++**Your job is to make the algorithm itself better.** If the current file is baseline DE, implement L-SHADE (see gen_11 diff). If the current file is plain SHADE (memory + archive + pbest) but lacks LPSR/restart, ADD LPSR and stagnation restart (per gen_11). If L-SHADE is already fully present, add a NEW mechanism on top:
+ - **Linear Population Size Reduction (LPSR)** - shrink population linearly each generation (this was in gen_11 and helped)
+ - **Restart when diversity collapses** - if mean pairwise distance < epsilon, reinitialize worst 80% keeping best
+ - **Local search / hill-climbing** - refine the best individual every K generations

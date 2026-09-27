@@ -1,0 +1,35 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index abb80da..6c37ec5 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -149,6 +149,8 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ ## ANALYSIS GUIDANCE (what to look at before making changes):
+ 
++0. **🚨 VECTORIZATION CHECK FIRST (CRITICAL):** If the diff contains `for i in range(pop_size)`, `for i in range(active_pop_size)`, or `for j in range(self.dim)` in mutation/crossover, that is the #1 recurring failure (gen_62=0.8549, gen_74=0.8846). Your task_agent.py prompt MUST warn about this BEFORE any algorithm guide.
++
+ 1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values, changing memory_size/memory_CR/archive_capacity numeric literals, or adding unused variables like `local_search_interval = 7` without implementing the actual loop), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes. **Specifically check whether new variables introduced in the diff are actually USED in the code. Unused variables are a red flag for fake structural changes.**
+ 
+ 2. **ALWAYS check if the Task Agent actually used the editor tool** by looking at chat_history_task_agent.md. If the Task Agent only described changes without applying them, your prompt must be more explicit about using the editor tool.
+diff --git a/task_agent.py b/task_agent.py
+index 8e1db9e..a92affc 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -101,6 +101,8 @@ You can improve dramatically by:
+ - Add local search / hill-climbing as a final refinement
+ - Change population sizing, mutation strategies, crossover schemes
+ 
++### 🚨 GEN_74 FAILED: NO PER-INDIVIDUAL LOOPS (0.8846 vs 0.9289). ONLY eval/selection loop allowed.
++
+ ### 🏆 CONCRETE SHADE IMPLEMENTATION GUIDE (use this as a template - DO NOT just tweak F and CR):
+ If implementing **SHADE** (Success-History based Adaptive DE), here is the core algorithm structure to add inside `DEOptimizer.optimize()`:
+ 
+@@ -220,6 +222,8 @@ Your patch MUST add new executable code paths, not just change existing literals
+ ## ⚠️ PERFORMANCE AND TIMEOUT WARNING (CRITICAL - A TIMEOUT SCORES ZERO):
+ Previous attempts that structurally upgraded the algorithm (e.g., L-SHADE) sometimes became **so slow that the evaluation timed out (>120 seconds on a simple sphere problem with only 2000 evals)**. A timeout means the entire generation scores ZERO, which is worse than no change at all.
+ 
++**Gen_74 ALSO TIMED OUT (>120s) with per-individual JADE loops, scoring 0.8846 (down from 0.9289).**
++
+ **Concrete observed failure in gen_11:** The Task Agent correctly implemented L-SHADE (success-history memory, current-to-pbest mutation, archive, LPSR) but the first version used nested Python `for` loops over population *and* dimension with per-gene `rng.random()` calls. That version timed out (>120s) on a 20D sphere with only 2000 evals. It only worked after switching to NumPy array operations. **Do NOT repeat this mistake - vectorize from the start.**
+ 
+ **You MUST keep the algorithm fast:**

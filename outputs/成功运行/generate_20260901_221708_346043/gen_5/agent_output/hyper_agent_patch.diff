@@ -1,0 +1,299 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index ea8cd0c..bf33e7a 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -73,59 +73,85 @@ CRITICAL REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
+ 
+ ## IMPORTANT GUIDANCE FOR TASK AGENT:
+ 
+-⚠️ **CRITICAL: The Task Agent MUST try different evolutionary algorithms. This is the #1 priority.**
++⚠️ **CRITICAL #1: The Task Agent MUST try different evolutionary algorithms. This is the #1 priority.**
+ 
+-Analysis of previous experiments shows that Task Agents consistently ONLY make small PSO parameter tweaks (adjusting w, c1, c2, adding turbulence, changing initialization) and NEVER replace the algorithm entirely. This has caused scores to plateau for 20+ generations.
++Analysis of previous experiments shows that Task Agents consistently ONLY make small DE/SHADE parameter tweaks (adjusting F, CR, pop_size, adding LHS init, tweaking memory sizes, adding stagnation boosts) and NEVER replace the algorithm entirely. This has caused scores to plateau.
+ 
+-You MUST ensure the task_agent.py prompt encourages the Task Agent to:
++⚠️ **CRITICAL #2: The Task Agent MUST use the `editor` tool with `str_replace` to actually modify code.** Agents that only describe changes score zero.
+ 
+-1. **Try different evolutionary algorithms** - not just parameter tweaks:
+-   - For **bbob_unconstrained**: DE, CMA-ES, SHADE, JADE, GLPSO, ES, etc.
++You MUST ensure the task_agent.py prompt:
++
++1. **Forces the Task Agent to try DIFFERENT algorithms** - not just parameter tweaks:
++   - For **bbob_unconstrained**: CMA-ES (preferred), PSO, L-SHADE, JADE, GLPSO, ES, etc.
+    - For **bbob_constrained**: C-DE, CMA-ES with constraints, SHADE with feasibility rules, etc.
+    - For **metabox_mt**: MFEA, MFEA-II, MFEA-DE, MFDE, CMT-DE, etc.
+    - For **metabox_mo**: NSGA-II, NSGA-III, MOEA/D, SPEA2, SMPSO, IBEA, etc.
+ 
+-2. **Try different meta-learning approaches** (not just DQN)
+-   - PPO, Bayesian Optimization, L2O, etc.
++2. **Explicitly tells the Task Agent what previous generations ALREADY did** (so it doesn't repeat them):
++   - DE parameter tuning (F, CR, pop_size, LHS init) - DONE
++   - Basic adaptive F/CR with a small memory (SHADE-style) - DONE
++   - Stagnation-aware F/CR boost in DummyHeuristicController - DONE
++   - The Task Agent should MOVE ON to structurally different methods.
++
++3. **Encourages trying different meta-learning approaches** (not just DQN)
++   - PPO, Bayesian Optimization, L2O, CMA-ES-as-controller, etc.
+ 
+-3. **Make meaningful structural changes** - not just parameter tuning:
++4. **Requires meaningful structural changes** - not just parameter tuning:
+    - Change the search operators (mutation, crossover, selection)
+-   - Change the population structure
+-   - Add new mechanisms (archive, migration, restart)
++   - Change the population structure (LPSR, island model, restart)
++   - Add new mechanisms (archive, migration, elitism, diversity preservation)
+ 
+-4. **Actually modify the code** - not just describe changes
++5. **Actually modify the code** - not just describe changes
+ 
+-5. **INCREMENTAL IMPROVEMENT STRATEGY** - VERY IMPORTANT:
++6. **INCREMENTAL IMPROVEMENT STRATEGY** - VERY IMPORTANT:
+    - **Each generation should focus on ONE functional module at a time** (e.g., only change the evolutionary algorithm OR only change the meta-learning approach OR only change the population structure)
+    - **Subsequent generations should gradually stack successful modules** (e.g., gen2 changes EA, gen3 changes meta-learning)
+    - **Do NOT change everything at once** - this makes it impossible to identify what works
+    - **Every generation MUST have a useful, actual code change** - no empty modifications
+ 
+-6. **EXPLORATION DIVERSITY** - CRITICAL:
++7. **EXPLORATION DIVERSITY** - CRITICAL:
+    - **Do NOT limit to the current DE + DQN combination**
+    - **Try completely different algorithm combinations**: CMA-ES + PPO, SHADE + Bayesian Opt, NSGA-III + L2O, etc.
+    - **Explore different search operators, selection mechanisms, and parameter adaptation strategies**
+ 
+-7. **CHECK DOMAIN EVALUATION PATTERNS** - CRITICAL:
++8. **CHECK DOMAIN EVALUATION PATTERNS** - CRITICAL:
+    - **ALWAYS check the domain folder (e.g., /hada/domains/bbob_unconstrained/dqn_de_util.py) to see how evaluation is called**
+    - **The evaluation function is typically a module-level function like `evaluate_problem(problem, x)` - DO NOT convert it to a class method like `self._eval_task()` unless you define it first**
+    - **Look at existing working code in the domain folder to understand the correct calling pattern before making changes**
+    - **If you introduce a new method, you MUST define it in the same file before calling it**
++   - **When adding a new optimizer class, remember to alias `DEOptimizer = NewOptimizer` at the bottom of the file so the existing caller still works**
+ 
+-8. **MAKE ACTUAL CODE IMPROVEMENTS AT EVERY STEP** - MANDATORY:
++9. **MAKE ACTUAL CODE IMPROVEMENTS AT EVERY STEP** - MANDATORY:
+    - **Every generation MUST produce working code that can run successfully**
+    - **Before submitting changes, verify: (a) all method calls exist, (b) function signatures match their callers, (c) no syntax errors**
+    - **Do NOT introduce methods that don't exist - if you want to add a helper method, define it FIRST**
+    - **Check that your modifications don't break existing functionality**
+ 
+-9. **CODE VERIFICATION CHECKLIST** - Before finishing:
++10. **CODE VERIFICATION CHECKLIST** - Before finishing:
+    - [ ] All method/function calls reference existing code
+    - [ ] No undefined variables or methods
+    - [ ] Function signatures match their callers
+    - [ ] The code can actually run without AttributeError or NameError
+    - [ ] Changes are incremental and don't break existing functionality
+ 
+-Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
++## YOUR ANALYSIS TASK THIS GENERATION
++1. **Read the latest generation's logs** at `{eval_path}/gen_N/generate.log` - look for errors, timeouts, "[TRAIN] Run X failed:", and score trends.
++2. **Read the Task Agent's recent patch** at `{eval_path}/gen_N/<domain>_eval/agent_evals/all_patch.diff` - determine what algorithm changes were actually made.
++3. **Read the Task Agent's recent chat history** at `{eval_path}/gen_N/<domain>_eval/agent_evals/chat_history_task_agent.md` - understand its reasoning and whether it followed the "different algorithm" mandate.
++4. **Check the score report** at `{eval_path}/gen_N/report.json` - identify which problems improved/regressed.
++
++## YOUR EDITING TASK THIS GENERATION
++You MUST modify at least one of:
++- `/hada/task_agent.py` (the prompt given to Task Agent each generation) - this is usually the most impactful.
++- `/hada/hyper_agent.py` (this file - your own prompt/logic).
++
++When editing task_agent.py, focus on making the instruction UNMISTAKABLY clear that:
++- The Task Agent MUST use `editor` → `str_replace` to modify code (not just describe).
++- The Task Agent MUST implement a DIFFERENT algorithm or MAJOR new mechanism (CMA-ES, PSO, L-SHADE, NSGA-II, MFEA, etc.) rather than tweaking DE constants.
++- The Task Agent MUST check `/hada/domains/{domain}/dqn_de_util.py` first to preserve the calling interface.
++- The Task Agent MUST verify with `python -m py_compile` before finishing.
++
++Remember: Your output patch (hyper_agent_patch.diff) is applied to the container BEFORE the Task Agent runs, so changes to task_agent.py directly shape what the Task Agent does each generation.
+ 
+ GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code.
+ """
+diff --git a/task_agent.py b/task_agent.py
+index 0b1c2f7..74f1ad6 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -12,6 +12,52 @@ from agent.llm_withtools import chat_with_agent
+ from utils.common import extract_jsons
+ 
+ 
++def _domain_algorithm_guidance(domain: str) -> str:
++    """Return domain-specific algorithm replacement guidance."""
++    guidance = []
++    if 'bbob_unconstrained' in domain or 'bbob' in domain:
++        guidance.append("""
++### bbob_unconstrained: STRONGLY RECOMMENDED ALGORITHMS (pick ONE, implement FULLY)
++1. **CMA-ES** (best-in-class for BBOB): Add a new `CMAESOptimizer` class. Implement:
++   - `mean`, `sigma`, `C = I`, `p_c`, `p_s`, `chi_n = sqrt(n) * (1 - 1/(4n) + 1/(21n^2))`
++   - Sample: `pop = mean + sigma * (B @ D @ randn(n, pop_size)).T` (use eigen-decomposition of C)
++   - Sort by fitness, update mean with top `mu` weights, update p_c/p_s/C with standard CMA-ES equations
++   - At the bottom: `DEOptimizer = CMAESOptimizer`
++2. **L-SHADE**: Keep the SHADE/JADE skeleton but add **Linear Population Size Reduction**:
++   `N_new = round(N_init + (N_min - N_init) * (evals / max_evals))`, then keep the best N_new.
++3. **JADE with archive** (only if you must stay on DE): correct current-to-pbest/1 with capped archive.
++4. **PSO**: Replace the whole optimizer with a PSO class (global/local best, inertia, velocity clamp).
++
++ALLOWED but lower priority: DE variants (SHADE, JADE). If previous generations already did SHADE/JADE, MOVE ON to CMA-ES or PSO.
++""")
++    if 'metabox_mt' in domain:
++        guidance.append("""
++### metabox_mt: Multitask EA recommended
++- MFEA, MFEA-II, MFEA-DE, MFDE (multifactorial DE with skill factor, mating probability rmp, vertical/horizontal crossover)
++- CMT-DE for constrained multitask
++""")
++    if 'metabox_mo' in domain:
++        guidance.append("""
++### metabox_mo: Multi-objective EA recommended
++- NSGA-II (non-dominated sorting + crowding distance), NSGA-III, MOEA/D (decomposition + Tchebycheff), SPEA2, SMPSO
++- Must handle multi-objective evaluation (Pareto front, hypervolume indicator)
++""")
++    return "\n".join(guidance)
++
++
++def _meta_learning_guidance() -> str:
++    return """
++## META-LEARNING LAYER (if you touch it, be structural)
++The current system uses a DQN-style controller that maps (iteration, evals, gbest_f) → (F, CR).
++If you modify this layer, do NOT just change reward shaping. Implement a DIFFERENT controller:
++- **PPO / policy gradient** controller (store trajectory, compute advantages)
++- **Bayesian Optimization** for parameter proposal (Gaussian Process over hyperparameters)
++- **Rule-based adaptive controller** with stagnation detection and restart (already partially done — make it better or move on)
++- **CMA-ES as the controller** (use CMA-ES to evolve F/CR per iteration)
++The controller interface is in `param_controller.py` (abstract `step(obs)` → dict) and `meta_learning.py`.
++"""
++
++
+ class TaskAgent(AgentSystem):
+     def forward(self, inputs):
+         """
+@@ -25,21 +71,125 @@ class TaskAgent(AgentSystem):
+                 - prediction (str): The prediction made by the agent.
+                 - new_msg_history (list): A list of messages representing the message history of the interaction.
+         """
+-        domain = inputs['domain']
+-        instruction = f"""You are an agent.
++        domain = inputs.get('domain', 'unknown')
++        algo_guidance = _domain_algorithm_guidance(domain)
++        meta_guidance = _meta_learning_guidance()
++
++        instruction = f"""You are an expert optimization algorithm researcher. Your job is to MODIFY CODE (not describe changes) to improve a black-box optimizer for the `{domain}` domain.
++
++## MANDATORY: USE THE EDITOR TOOL
++You MUST use the `editor` tool with `command='str_replace'` to make actual code modifications.
++Simply describing changes or only using `bash`/`view` will score ZERO.
++Use `editor` → `view` first to read files, then `editor` → `str_replace` to edit.
++
++## WHAT PREVIOUS AGENTS DID (READ THIS — DO NOT REPEAT IT)
++Previous generations of agents have already:
++- Tuned DE parameters (F, CR, pop_size, LHS init)
++- Added basic SHADE/JADE-style adaptive F/CR with a small memory and archive
++- Added stagnation-aware F/CR boost in DummyHeuristicController
++These are DONE. Do NOT spend this generation on another round of DE parameter tuning or another SHADE/JADE variant UNLESS you are adding Linear Population Size Reduction (L-SHADE) or a fundamentally different operator.
++
++## THE #1 PRIORITY THIS GENERATION
++Implement a **DIFFERENT ALGORITHM** or a **MAJOR NEW MECHANISM** (not parameter tweaks).
++
++{algo_guidance}
++
++{meta_guidance}
++
++## INTERFACE CONTRACT (ABSOLUTELY MUST NOT BREAK)
++Read `/hada/domains/{domain}/dqn_de_util.py` FIRST to see exactly how the optimizer is instantiated and called. Typically:
++```python
++de_opt = ec_mod.DEOptimizer(dim, lower, upper, max_evals, params={{'F':0.5,'CR':0.5}}, controller=ctrl, recorder=None, swarm_size=40)
++gbest, stats = de_opt.optimize(problem, train=..., seed=seed)
++```
++Therefore:
++- The class `DEOptimizer` must exist, OR you add `DEOptimizer = NewOptimizerClass` at the bottom of ec_algorithm.py.
++- Constructor signature must be compatible with the above call.
++- `optimize()` must return `(gbest_list, stats_dict)`.
++- `stats_dict` must contain at least `gbest_f`, `initial_gbest_f`, `evals`, `iterations`.
++- Use the existing `evaluate_problem(problem, x)` function for all evaluations.
++- Do NOT modify files under `/hada/domains/` (protected).
++
++## INCREMENTAL IMPROVEMENT STRATEGY
++- Pick ONE functional module to change this generation: EITHER the evolutionary algorithm OR the meta-learning controller OR the population structure.
++- Do NOT try to change everything at once.
++- Make sure the code compiles and runs before finishing.
++
++## CONCRETE TEMPLATES
++
++### Template: CMA-ES (preferred for bbob)
++```python
++class CMAESOptimizer:
++    # same __init__ signature as DEOptimizer
++    def optimize(self, problem, x0=None, train=True, seed=None):
++        n = self.dim
++        lb, ub = self.lower_bounds, self.upper_bounds
++        sigma = 0.2 * (ub[0] - lb[0]) if np.all(ub > lb) else 1.0
++        m = np.clip(rng.uniform(lb, ub), lb, ub) if x0 is None else np.asarray(x0, float)
++        C = np.eye(n)
++        p_c = np.zeros(n); p_s = np.zeros(n)
++        # hyperparameters: lambda_, mu, weights, mueff, cc, cs, c1, cmu, damps
++        # main loop: sample, evaluate, sort, update m/p_c/p_s/C, track gbest
++        return gbest_list, stats
++DEOptimizer = CMAESOptimizer
++```
++
++### Template: L-SHADE population reduction (add inside a DE/SHADE loop)
++```python
++N_min = max(4, int(0.25 * pop_size_init))
++new_n = round(pop_size_init + (N_min - pop_size_init) * (evals / self.max_evals))
++if new_n < pop_size:
++    keep = np.argsort(fitness)[:new_n]
++    pop, fitness = pop[keep], fitness[keep]
++    if 'archive' in locals() and len(archive) > 0:
++        pass
++    pop_size = new_n
++```
++
++### Template: new optimizer class
++```python
++class MyNewOptimizer:
++    def __init__(self, dim, lower_bounds, upper_bounds, max_evals, params=None, controller=None, recorder=None, swarm_size=None):
++        # copy the pattern from DEOptimizer.__init__
++        ...
++    def optimize(self, problem, x0=None, train=True, seed=None):
++        ...
++        return gbest_list, stats_dict
++DEOptimizer = MyNewOptimizer   # MUST alias so the caller works
++```
++
++## PROCESS
++1. `editor` → `view` `/hada/domains/{domain}/dqn_de_util.py` to see the exact calling convention.
++2. `editor` → `view` `/hada/metabbo/ec_algorithm.py` to see current algorithm.
++3. Decide ONE major change (prefer CMA-ES, PSO, L-SHADE, or a new meta-learning controller).
++4. Use `editor` → `str_replace` to implement it.
++5. Verify with `bash`: `cd /hada/metabbo && python -m py_compile ec_algorithm.py param_controller.py meta_learning.py`
++6. Optionally run a quick smoke test in bash.
++
++## FINAL CHECKLIST (BEFORE SUBMITTING)
++- [ ] I used `editor` with `command='str_replace'` at least once.
++- [ ] I implemented a NEW algorithm class or a MAJOR mechanism (LPSR, archive, restart, migration), not just constant tuning.
++- [ ] `DEOptimizer` class exists (or alias) with compatible constructor.
++- [ ] `optimize()` returns `(list, dict)` with `gbest_f` and `initial_gbest_f`.
++- [ ] All method/function calls reference existing code (no AttributeError / NameError).
++- [ ] Code compiles with py_compile.
+ 
+ Task input:
+ ```
+ {inputs}
+ ```
++"""
+ 
+-Respond in JSON format with the following schema:
+-<json>
+-{{
+-    "response": ...
+-}}
+-</json>"""
+-        new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all')
++        new_msg_history = chat_with_agent(
++            instruction,
++            model=self.model,
++            msg_history=[],
++            logging=self.log,
++            tools_available='all',
++            multiple_tool_calls=True,
++            max_tool_calls=100,
++            require_tool='str_replace'
++        )
+ 
+         # Extract the response
+         prediction = "None"

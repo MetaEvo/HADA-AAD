@@ -1,0 +1,227 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index b6cbc5a..649670a 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -110,14 +110,23 @@ class DEOptimizer:
+         initial_population_positions = pop.copy()
+         initial_population_fitness = fitness.copy()
+ 
+-        # Archive for JADE-style mutation
++        # Archive for JADE/SHADE-style mutation
+         archive = np.empty((0, self.dim))
++        max_archive_size = max(2 * pop_size, 100)
+ 
+-        # JADE-style adaptive state
+-        archive = []
+-        max_archive_size = max(pop_size, 100)
+-        p_best_frac = 0.2
+-        c_update = 0.1
++        # SHADE-style memory for F and CR adaptation
++        memory_size = 5
++        memory_F = np.full(memory_size, 0.5)
++        memory_CR = np.full(memory_size, 0.5)
++        memory_pos = 0
++
++        # Successful parameter records for memory update
++        success_F = []
++        success_CR = []
++
++        # Stagnation tracking
++        stagnation_counter = 0
++        prev_gbest_f = gbest_f
+ 
+         # Main loop
+         iteration = 0
+@@ -133,12 +142,12 @@ class DEOptimizer:
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+             
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
++            F_base = float(params.get('F', self.F))
++            CR_base = float(params.get('CR', self.CR))
+             
+             prev_gbest_f = gbest_f
+             
+-            # JADE-style mutation with archive and optional pbest selection
++            # SHADE/JADE-style mutation with archive and adaptive F/CR memory
+             new_pop = np.copy(pop)
+             # Sort indices by fitness (smaller is better)
+             sorted_idx = np.argsort(fitness)
+@@ -147,32 +156,57 @@ class DEOptimizer:
+             pbest_n = max(2, int(pbest_rate * pop_size))
+             archive_prob = float(params.get('archive_prob', 0.5))
+             
++            used_F = np.empty(pop_size)
++            used_CR = np.empty(pop_size)
++            improved_mask = np.zeros(pop_size, dtype=bool)
++            
+             for i in range(pop_size):
+-                # Per-individual dithering of F and CR for better exploration
+-                F_i = float(np.clip(F + 0.1 * (rng.random() - 0.5), 0.1, 1.0))
+-                CR_i = float(np.clip(CR + 0.1 * (rng.random() - 0.5), 0.0, 1.0))
++                # Sample SHADE-adapted F and CR from memory, with fallback to controller values
++                mi = int(rng.randint(0, memory_size))
++                if memory_F[mi] > 0:
++                    # Cauchy distribution centered at memory_F[mi], clipped to [0,1]
++                    F_i = float(np.clip(rng.standard_cauchy() * 0.1 + memory_F[mi], 0.0, 1.0))
++                else:
++                    F_i = float(F_base)
++                
++                if memory_CR[mi] > 0:
++                    CR_i = float(np.clip(rng.normal(memory_CR[mi], 0.1), 0.0, 1.0))
++                else:
++                    CR_i = float(CR_base)
++                
++                used_F[i] = F_i
++                used_CR[i] = CR_i
+                 
+                 # Choose pbest from top pbest_n
+                 pbest_idx = sorted_idx[rng.randint(0, pbest_n)]
+                 if pbest_idx == i and pbest_n > 1:
+-                    # Pick another pbest index to avoid using current as pbest
+                     pbest_idx = sorted_idx[rng.randint(0, pbest_n)]
+                 x_pbest = pop[pbest_idx]
+                 
+-                # Choose two distinct indices != i from population
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 2:
+-                    candidates = list(range(pop_size))
+-                a_idx, b_idx = rng.choice(candidates, size=2, replace=False)
+-                a = pop[a_idx]
+-                b = pop[b_idx]
+-                
+-                # With probability archive_prob, use archive vector as b for extra diversity
+-                if archive.shape[0] >= 1 and rng.random() < archive_prob:
+-                    b = archive[rng.randint(0, archive.shape[0])]
++                # Choose candidate index pool (exclude current index i)
++                candidates = np.array([idx for idx in range(pop_size) if idx != i])
++                if candidates.size < 3:
++                    candidates = np.arange(pop_size)
+                 
+-                # Mutation: current-to-pbest/1
+-                mutant = pop[i] + F_i * (x_pbest - pop[i]) + F_i * (a - b)
++                strategy = str(params.get('strategy', 'jade'))
++                if strategy == 'rand/1':
++                    # Classic rand/1 mutation: v = x_r1 + F*(x_r2 - x_r3)
++                    r1, r2, r3 = rng.choice(candidates, size=3, replace=False)
++                    mutant = pop[r1] + F_i * (pop[r2] - pop[r3])
++                else:
++                    # Choose two distinct indices != i from population
++                    if candidates.size < 2:
++                        candidates = np.arange(pop_size)
++                    a_idx, b_idx = rng.choice(candidates, size=2, replace=False)
++                    a = pop[a_idx]
++                    b = pop[b_idx]
++                    
++                    # Optionally use archive vector as b for extra diversity
++                    if archive.shape[0] >= 1 and rng.random() < archive_prob:
++                        b = archive[rng.randint(0, archive.shape[0])]
++                    
++                    # Mutation: current-to-pbest/1
++                    mutant = pop[i] + F_i * (x_pbest - pop[i]) + F_i * (a - b)
+                 
+                 # Binomial crossover
+                 j_rand = rng.randint(0, self.dim)
+@@ -181,8 +215,12 @@ class DEOptimizer:
+                     if rng.random() < CR_i or j == j_rand:
+                         trial[j] = mutant[j]
+                 
+-                # Boundary handling: clip and optionally reflect
+-                new_pop[i] = np.clip(trial, lb, ub)
++                # Boundary handling: reflect then clip (keeps diversity at bounds)
++                reflected = np.where((trial < lb) | (trial > ub),
++                                     2.0 * np.where(trial < lb, lb, ub) - trial,
++                                     trial)
++                trial = np.clip(reflected, lb, ub)
++                new_pop[i] = trial
+             
+             # Evaluate trial vectors
+             for i in range(pop_size):
+@@ -194,9 +232,10 @@ class DEOptimizer:
+                 
+                 # Greedy selection with JADE archive update
+                 if trial_f < fitness[i]:
+-                    # Archive the replaced (old) solution for diversity
+-                    if archive.shape[0] >= pop_size:
+-                        archive[rng.randint(0, pop_size)] = pop[i].copy()
++                    improved_mask[i] = True
++                    # Archive the replaced old solution for diversity
++                    if archive.shape[0] >= max_archive_size:
++                        archive[rng.randint(0, archive.shape[0])] = pop[i].copy()
+                     else:
+                         archive = np.vstack([archive, pop[i].copy()])
+                     pop[i] = new_pop[i].copy()
+@@ -205,6 +244,44 @@ class DEOptimizer:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+             
++            # Record successful F/CR values for SHADE memory update
++            for i in range(pop_size):
++                if improved_mask[i]:
++                    success_F.append(used_F[i])
++                    success_CR.append(used_CR[i])
++
++            # SHADE-style memory update using Lehmer mean for F and arithmetic mean for CR
++            if len(success_F) > 0:
++                sF = np.asarray(success_F, dtype=float)
++                sCR = np.asarray(success_CR, dtype=float)
++                w = np.abs(sF) / max(np.sum(np.abs(sF)), 1e-12)
++                lehmer_F = float(np.sum(w * sF * sF) / max(np.sum(w * sF), 1e-12))
++                mean_CR = float(np.mean(sCR))
++                memory_F[memory_pos] = float(np.clip(lehmer_F, 0.0, 1.0))
++                memory_CR[memory_pos] = float(np.clip(mean_CR, 0.0, 1.0))
++                memory_pos = (memory_pos + 1) % memory_size
++
++            # Always clear per-generation successful parameter records
++            success_F = []
++            success_CR = []
++            
++            # Track stagnation for adaptive population reduction / restart
++            if gbest_f < prev_gbest_f:
++                stagnation_counter = 0
++            else:
++                stagnation_counter += 1
++
++            # L-SHADE style population size reduction on prolonged stagnation
++            if stagnation_counter >= 20 and pop_size > 8:
++                fresh_sorted = np.argsort(fitness)
++                keep_n = max(4, int(pop_size // 2))
++                keep_idx = fresh_sorted[:keep_n]
++                pop = pop[keep_idx].copy()
++                fitness = fitness[keep_idx].copy()
++                pop_size = keep_n
++                # Keep the archive intact for diversity; it may already be large enough.
++                stagnation_counter = 0
++
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 054f914..fcad7e2 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -65,7 +65,9 @@ class DummyHeuristicController(ParamController):
+         # Also support DE-style parameters for multi-objective DE optimizers
+         F = 0.9 - 0.5 * t  # Large mutation early, refined late
+         CR = 0.9 - 0.4 * t # More crossover early for diversity
+-        return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR}
++        return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR,
++                'pbest_rate': 0.3 + 0.3 * t, 'archive_prob': 0.8 - 0.4 * t,
++                'strategy': 'rand/1' if t < 0.3 else 'jade'}
+ 
+ 
+ class AdaptiveDEController(ParamController):
+diff --git a/task_agent.py b/task_agent.py
+index b46160c..4b0bea7 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -55,7 +55,7 @@ The gen_11 L-SHADE included these critical components:
+ 
+ ## CURRENT STATE OF ec_algorithm.py (WHAT TO IMPROVE ON):
+ The current file already has a **partial JADE implementation** with archive and current-to-pbest/1, but it is **MISSING several key L-SHADE components** that the gen_11 winner used:
+-- ❌ **NO Linear Population Size Reduction (LPSR)** - the population stays at fixed size the whole run. This was important in gen_11.
++- ✅ **HAS Linear Population Size Reduction (LPSR)** - added in gen_81, do NOT retune.
+ - ❌ **NO stagnation restart** - when the population converges, there is no mechanism to reinitialize worst individuals near the best. This was in gen_11.
+ - ✅ HAS external archive (JADE-style)
+ - ✅ HAS current-to-pbest/1 mutation

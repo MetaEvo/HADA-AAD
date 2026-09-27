@@ -1,0 +1,34 @@
+diff --git a/task_agent.py b/task_agent.py
+index 88e7e8f..89943ab 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -53,8 +53,19 @@ The gen_11 L-SHADE included these critical components:
+ 7. **Weighted mean for CR update** - uses delta-fitness weights
+ 8. **Controller optionally supplies pbest_p** - but the algorithm also adapts it internally
+ 
++## 🚨 ABSOLUTE TOP PRIORITY: YOU MUST MAKE STRUCTURAL CHANGES - NOT PARAMETER TWEAKS
++Analysis of many generations shows that Task Agents consistently only tweak numeric parameters (w, c1, c2, F, CR) and NEVER replace the algorithm. **This has caused scores to plateau.**
++
++**You MUST do at least ONE of the following structural changes this generation:**
++1. **Replace the entire search algorithm** - e.g., if current is PSO, replace with DE/SHADE/JADE/CMA-ES. If current is DE/JADE, upgrade to L-SHADE (add LPSR + stagnation restart + weighted Lehmer mean) OR replace with CMA-ES entirely.
++2. **Add a major new mechanism** that is not present: linear population size reduction, stagnation restart, external archive, success-history memory, pbest mutation, Cauchy mutation, etc.
++3. **Change the population structure** (e.g., multi-population, island model, restart strategy).
++4. **Change the selection/update logic** (e.g., greedy selection, tournament, feasibility rules for constrained).
++
++**If your planned change is ONLY adjusting numeric values (F, CR, w, c1, c2, pop_size), DO NOT DO IT. It will be considered a failure.**
++
+ ## CURRENT STATE OF ec_algorithm.py (WHAT TO IMPROVE ON):
+-The current file already has a **partial JADE implementation** with archive and current-to-pbest/1, but it is **MISSING several key L-SHADE components** that the gen_11 winner used:
++The current file likely has a **partial JADE implementation** with archive and current-to-pbest/1, but it is **MISSING several key L-SHADE components** that the gen_11 winner used:
+ - ❌ **NO Linear Population Size Reduction (LPSR)** - the population stays at fixed size the whole run. This was important in gen_11.
+ - ❌ **NO stagnation restart** - when the population converges, there is no mechanism to reinitialize worst individuals near the best. This was in gen_11.
+ - ✅ HAS external archive (JADE-style)
+@@ -63,7 +74,7 @@ The current file already has a **partial JADE implementation** with archive and
+ - ❌ Memory update uses simple weighted mean, NOT the **weighted Lehmer mean** (which gen_11 used for F)
+ - ✅ Controller observation includes pop_size hint
+ 
+-**YOUR JOB: Upgrade the current JADE implementation to L-SHADE by adding the missing components from gen_11's winning implementation.**
++**YOUR PRIMARY JOB: Either (A) upgrade the current JADE to full L-SHADE by adding LPSR, stagnation restart, and weighted Lehmer mean, OR (B) replace the algorithm entirely with a different one (CMA-ES, SHADE, jDE, etc.). DO NOT just tweak parameter values.**
+ 
+ ## FILES YOU ARE ALLOWED TO MODIFY:
+ 1. `/hada/metabbo/ec_algorithm.py` - The main evolutionary algorithm (MOST IMPORTANT)

@@ -1,0 +1,76 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index ea8cd0c..4ec901c 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -95,6 +95,16 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ 4. **Actually modify the code** - not just describe changes
+ 
++4b. **MANDATORY ALGORITHM REPLACEMENT (bbob_unconstrained)** - The Task Agent MUST change the actual search operator, not just tweak parameters. The following changes are explicitly REJECTED as insufficient:
++- Changing F, CR, w, c1, c2, pop_size values
++- Adding LHS initialization
++- Adding stagnation restart of worst individuals
++- Blending controller outputs with memory values
++- Fixing log/exp names
++- Adding boundary handling tweaks
++
++The Task Agent MUST implement one of: JADE, L-SHADE, CMA-ES, or another completely different search mechanism (e.g., current-to-pbest/1 with archive, best/2 mutation, exponential crossover, (mu+lambda) selection). Make the task_agent.py prompt explicitly require this.
++
+ 5. **INCREMENTAL IMPROVEMENT STRATEGY** - VERY IMPORTANT:
+    - **Each generation should focus on ONE functional module at a time** (e.g., only change the evolutionary algorithm OR only change the meta-learning approach OR only change the population structure)
+    - **Subsequent generations should gradually stack successful modules** (e.g., gen2 changes EA, gen3 changes meta-learning)
+diff --git a/task_agent.py b/task_agent.py
+index dad7482..3e30db2 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -16,7 +16,8 @@ def _domain_algorithm_guidance(domain: str) -> str:
+     """Return domain-specific algorithm replacement guidance."""
+     if 'bbob_unconstrained' in domain or 'bbob' in domain:
+         return """
+-### RECOMMENDED REPLACEMENTS (pick ONE and implement fully):
++### MANDATORY ALGORITHM REPLACEMENT - YOU MUST PICK ONE AND IMPLEMENT IT FULLY:
++Your change is REJECTED if you only modify constants, initialization, restart logic, or memory sizes while keeping the existing `rand/1/bin` DE loop intact.
+ 1. **L-SHADE** (best for BBOB): Keep the DE skeleton but add:
+    - Proper current-to-pbest/1 mutation with archive (the existing code only has a partial pbest, not a correct JADE-style archive)
+    - Linear Population Size Reduction (LPSR): shrink population size as budget is consumed
+@@ -24,6 +25,20 @@ def _domain_algorithm_guidance(domain: str) -> str:
+ 2. **JADE**: Replace the mutation with current-to-pbest/1 (using an archive), and adapt F/CR per-individual via Cauchy/Normal sampling with Lehmer mean updates.
+ 3. **CMA-ES**: Add a new `CMAESOptimizer` class (copy the DEOptimizer skeleton, replace the population generation with `mean + sigma * B @ D @ randn`) and alias `DEOptimizer = CMAESOptimizer` at the bottom of the file so the caller still works.
+ 4. **DE/current-to-pbest/1 with archive** (JADE-lite): minimal but structural - it changes the actual search operator, not just a constant.
++
++**What counts as "changing the search operator"?**
++- Different mutation strategy (e.g., current-to-pbest/1, best/2, current-to-rand/1 with rotation-invariant crossover)
++- Different crossover (e.g., exponential crossover, eigenvector-based crossover, no crossover with rotation-invariant mutation)
++- Different selection (e.g., (mu+lambda), (mu,lambda), elitist with archive)
++- A completely new class (CMA-ES, GLPSO, etc.)
++
++**What does NOT count (REJECTED):**
++- Changing F, CR, w, c1, c2, pop_size
++- Adding LHS initialization
++- Adding stagnation restart of worst individuals
++- Blending controller outputs with memory values
++- Fixing log/exp names
++- Adding boundary handling tweaks
+ """
+     return ""
+ 
+@@ -141,13 +156,18 @@ class CMAESOptimizer:
+ DEOptimizer = CMAESOptimizer  # alias at bottom so dqn_de_util.py still works
+ ```
+ 
+-## WHAT NOT TO DO
++## WHAT NOT TO DO (YOUR CHANGE WILL BE REJECTED IF YOU ONLY DO THESE)
+ - ❌ Don't just change F, CR, w, c1, c2, pop_size values
+ - ❌ Don't just add LHS initialization (already done in previous generations)
++- ❌ Don't just add stagnation restart of worst individuals
++- ❌ Don't just blend controller outputs with memory values
++- ❌ Don't just fix log/exp names
+ - ❌ Don't just increase SHADE memory size or tweak pbest_p (already done)
+ - ❌ Don't rewrite dqn_de_util.py or any file in /hada/domains/
+ - ❌ Don't break the `optimize()` return contract
+ 
++**You MUST change the actual search operator (mutation strategy, crossover type, or selection mechanism) OR add a new optimizer class (CMA-ES, JADE, L-SHADE, etc.).**
++
+ ## PROCESS
+ 1. Read `/hada/domains/{domain}/dqn_de_util.py` and `/hada/metabbo/ec_algorithm.py` (use `editor` with command='view')
+ 2. Choose ONE algorithm change (don't spread effort across many things)

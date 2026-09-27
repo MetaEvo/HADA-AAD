@@ -1,0 +1,207 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 26e6bef..a3e6681 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -156,8 +156,9 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+    - Task Agent introduced a method that doesn't exist
+    - Task Agent broke the DEOptimizer interface
+    - Task Agent never modified ec_algorithm.py (most common)
++   - **Task Agent's structural change is too slow (timeout)** - e.g., gen_30 implemented JADE but used per-individual Python loops over pop_size AND dim for mutation/crossover, plus a per-dimension `_reflect_boundary` loop. This causes timeouts on 20D/2000-eval settings. If you see this, add explicit "FORBIDDEN PATTERNS" and a copy-paste vectorized NumPy template to task_agent.py.
+ 
+-4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
++4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py". If the Task Agent makes structural changes but with slow Python loops, update the prompt to provide a complete vectorized NumPy implementation template.
+ 
+ Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+ 
+diff --git a/hyper_agent_improvements.md b/hyper_agent_improvements.md
+index 8cdfcfb..0473722 100644
+--- a/hyper_agent_improvements.md
++++ b/hyper_agent_improvements.md
+@@ -1,20 +1,32 @@
+ # Meta Agent Improvements
+ 
+-## Changes made this generation:
++## Changes made this generation (gen_31):
+ 
+ ### 1. task_agent.py prompt improvements
+-- Added **absolute requirement** that the Task Agent must make a structural change to the core search mechanism, not just tweak parameters. Explicitly lists failure modes (changing F, CR, swarm_size, adding tiny perturbations) as unacceptable.
+-- Added a **concrete SHADE implementation guide** with step-by-step pseudocode for success-history memory, current-to-pbest mutation, archive, and Lehmer mean updates.
+-- Added a **vectorized NumPy mutation/crossover template** for SHADE/JADE, with explicit code showing how to sample F/CR per-individual, do pbest mutation, and binomial crossover using NumPy array operations instead of per-individual Python loops.
+-- Added a **performance/timeout warning** section explaining that a timeout scores zero. Documented the concrete gen_11 failure where an L-SHADE implementation with nested Python for-loops timed out (>120s on a 20D sphere with 2000 evals).
+-- Made the smoke test **mandatory** before finishing, with a concrete Python script to run.
+-- Emphasized that FAST CODE IS AS IMPORTANT AS CORRECT CODE.
++- Added a new **`❌ ABSOLUTELY FORBIDDEN PATTERNS`** section that explicitly identifies the exact failure modes observed in gen_30's diff:
++  - Per-individual nested Python loops over `pop_size` and `dim` for mutation/crossover (causes timeout on 20D).
++  - `_reflect_boundary` that loops over each dimension in Python per individual.
++  - Using `rng.random()` inside a per-gene double loop instead of generating full random matrices at once.
++  - Calling undefined variables (e.g., `trial_f[i]` before initializing `trial_f` as a NumPy array).
++  - Submitting without running the mandatory smoke test.
++- Added a **complete, ready-to-copy, fully vectorized JADE/SHADE-style `optimize()` body** as a template. This template uses:
++  - `rng.standard_cauchy(pop_size)` and `rng.randn(pop_size)` for per-individual F/CR sampling.
++  - Vectorized pbest mutation (`pop + F_i[:, None] * (pbest - pop) + F_i[:, None] * (pop[r1] - x2)`).
++  - NumPy reflection (`np.where(mutants < lb, 2*lb - mutants, mutants)`) instead of Python loops.
++  - Vectorized binomial crossover with `CR_mask = rng.random((pop_size, self.dim)) < CR_i[:, None]`.
++  - Only the unavoidable `evaluate_problem` call remains in a Python loop.
++- Explicitly states: **You must use this vectorized template as your starting point. It is acceptable to modify it, but do NOT revert to per-individual Python loops over mutation/crossover.**
+ 
+ ### 2. hyper_agent.py prompt improvements
+-- Added mandatory step-by-step actions for the Meta Agent: find the latest generation, read the diff, read chat history, and react to parameter-only tweaks or evaluation failures.
+-- Added a requirement to write a summary of changes to `/hada/agent_output/hyper_agent_improvements.md`.
++- Added gen_30 as a concrete example of a structural-but-slow JADE implementation that uses per-individual Python loops and a per-dimension `_reflect_boundary` loop, causing timeouts.
++- Instructs the Meta Agent to add explicit "FORBIDDEN PATTERNS" and a copy-paste vectorized NumPy template to task_agent.py when it detects this failure mode.
++- Directed the Meta Agent to target task_agent.py updates with either "THE ONLY FILE THAT MATTERS IS..." or vectorized implementation templates depending on the failure signature.
++
++### 3. Analysis performed this run
++- Read gen_30 `all_patch.diff`: The Task Agent DID make a structural JADE attempt (archive, current-to-pbest, success-history means, Latin hypercube init), but implemented it with per-individual Python loops and a per-dimension `_reflect_boundary`. This risks timeout/evaluation failure.
++- Read gen_30 `chat_history_task_agent.md`: Confirms the Task Agent used the `editor` tool to view files and apply changes.
++- Read current `ec_algorithm.py`: Baseline remains basic DE with per-individual/per-gene loops.
+ 
+ ## Rationale
+-- Prior generations plateaued because Task Agents only tweaked PSO/DE parameter values instead of replacing the algorithm.
+-- When Task Agents finally attempted structural changes (L-SHADE), the first implementation was too slow (nested Python loops) and timed out, scoring zero.
+-- These prompt changes should push future Task Agents to: (1) actually replace the search algorithm, and (2) do so with vectorized NumPy code that runs fast enough to pass the evaluation timeout.
++- Gen_30 shows the Task Agent is now attempting structural changes (good), but the implementation is not vectorized (bad) and will likely time out or be excessively slow.
++- The new forbidden-patterns section and copy-paste vectorized template directly address this gap so the next generation can implement a fast, correct JADE/SHADE.
+diff --git a/task_agent.py b/task_agent.py
+index 5a8a489..5be8a1f 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -175,6 +175,138 @@ new_pop = trials
+ 
+ **Alternatively, implementing JADE is very similar** but uses `current-to-pbest` mutation with a fixed archive and parameter adaptation via `mu_F` and `mu_CR` (not per-individual history). **Whatever you implement, keep the mutation/crossover fully vectorized with NumPy.**
+ 
++## ❌ ABSOLUTELY FORBIDDEN PATTERNS (DO NOT DO THESE - THEY CAUSE TIMEOUTS OR FAILURES):
++1. **DO NOT keep the old per-individual Python loop structure**:
++   ```python
++   for i in range(pop_size):
++       for j in range(self.dim):
++           if rng.random() < CR: ...
++   ```
++   This is too slow for 20D and >2000 evals. The previous generation (gen_30) attempted JADE but kept these nested Python loops and _reflect_boundary with a Python loop over dimensions. That will time out and score ZERO.
++2. **DO NOT use `_reflect_boundary` that loops over each dimension in Python** per individual. Use NumPy reflection/clipping on whole arrays at once:
++   ```python
++   mutants = np.where(mutants < lb, 2*lb - mutants, mutants)
++   mutants = np.where(mutants > ub, 2*ub - mutants, mutants)
++   trials = np.clip(trials, lb, ub)
++   ```
++3. **DO NOT use `rng.random()` inside a per-gene double loop** - always generate the full random matrix at once with `rng.random((pop_size, dim))`.
++4. **DO NOT call methods that don't exist** (e.g., `trial_f[i]` before `trial_f` is initialized in the right shape). If you add variables like `trial_f`, `F_i_list`, `CR_i_list`, initialize them as NumPy arrays BEFORE the loop.
++5. **DO NOT submit without running the mandatory smoke test below.** If it takes >30 seconds, your code is TOO SLOW and must be rewritten with NumPy vectorization.
++
++## ✅ A COMPLETE, VECTORIZED JADE/SHADE-STYLE `optimize()` BODY (COPY THIS AS YOUR BASE):
++Replace the inner per-generation mutation/selection portion of `DEOptimizer.optimize()` with this fully vectorized pattern. This is known to run fast on 20D, 2000 evals, population 40:
++
++```python
++# Inside optimize(), after initializing pop/fitness/gbest:
++# JADE/SHADE state
++archive = np.empty((0, self.dim))
++archive_max = max(1, int(pop_size * 2.0))
++mu_F = float(self.F)
++mu_CR = float(self.CR)
++c = 0.1
++
++# Main loop
++while not done:
++    iteration += 1
++    params = dict(self.params)
++    if self.controller is not None:
++        obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f,
++               'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
++        step_params = self.controller.step(obs)
++        if isinstance(step_params, dict):
++            params.update(step_params)
++
++    prev_gbest_f = gbest_f
++
++    # Per-generation parameter sampling (fully vectorized)
++    base_F = float(params.get('F', self.F))
++    base_CR = float(params.get('CR', self.CR))
++    base_F = min(1.0, max(0.1, 0.5 * base_F + 0.5 * mu_F))
++    base_CR = min(1.0, max(0.0, 0.5 * base_CR + 0.5 * mu_CR))
++
++    F_i = base_F + 0.1 * rng.standard_cauchy(pop_size)
++    F_i = np.clip(F_i, 0.0, 1.0)
++    F_i[F_i <= 0] = 0.1
++    CR_i = np.clip(base_CR + 0.1 * rng.randn(pop_size), 0.0, 1.0)
++
++    # pbest pool: top ~20% best (shrinking to 5% as budget is consumed)
++    sorted_idx = np.argsort(fitness)[:pop_size]
++    pbest_ratio = max(0.05, 0.25 * (1.0 - evals / max(1, self.max_evals)))
++    n_pbest = max(2, int(pop_size * pbest_ratio))
++    pbest_rand = rng.randint(0, n_pbest, size=pop_size)
++    pbest = pop[sorted_idx[pbest_rand]]
++
++    # r1: random distinct from i
++    r1 = rng.randint(0, pop_size, size=pop_size)
++    r1[r1 == np.arange(pop_size)] = (r1[r1 == np.arange(pop_size)] + 1) % pop_size
++
++    # r2: random distinct from i and r1; optionally from archive
++    r2 = rng.randint(0, pop_size, size=pop_size)
++    r2[r2 == np.arange(pop_size)] = (r2[r2 == np.arange(pop_size)] + 1) % pop_size
++    r2[r2 == r1] = (r2[r2 == r1] + 1) % pop_size
++    x2 = pop[r2]
++    use_archive = (archive.shape[0] > 0) & (rng.random(pop_size) < 0.5)
++    if np.any(use_archive):
++        arch_idx = rng.randint(0, archive.shape[0], size=int(np.sum(use_archive)))
++        x2[use_archive] = archive[arch_idx]
++
++    # current-to-pbest/1 mutation (vectorized)
++    mutants = pop + F_i[:, None] * (pbest - pop) + F_i[:, None] * (pop[r1] - x2)
++    mutants = np.where(mutants < lb, 2 * lb - mutants, mutants)
++    mutants = np.where(mutants > ub, 2 * ub - mutants, mutants)
++    mutants = np.clip(mutants, lb, ub)
++
++    # Binomial crossover (vectorized)
++    CR_mask = rng.random((pop_size, self.dim)) < CR_i[:, None]
++    j_rand = rng.randint(0, self.dim, size=pop_size)
++    CR_mask[np.arange(pop_size), j_rand] = True
++    trials = np.where(CR_mask, mutants, pop)
++    trials = np.clip(trials, lb, ub)
++
++    # Evaluate all trials (only Python loop is over evaluate_problem, unavoidable)
++    success_F = []
++    success_CR = []
++    for i in range(pop_size):
++        if evals >= self.max_evals:
++            done = True
++            break
++        trial_f = evaluate_problem(problem, trials[i])
++        evals += 1
++        if trial_f < fitness[i]:
++            if archive.shape[0] < archive_max:
++                archive = np.vstack([archive, pop[i].reshape(1, -1)])
++            else:
++                archive[int(rng.randint(0, archive.shape[0]))] = pop[i]
++            pop[i] = trials[i]
++            fitness[i] = trial_f
++            success_F.append(F_i[i])
++            success_CR.append(CR_i[i])
++            if trial_f < gbest_f:
++                gbest_f = trial_f
++                gbest = trials[i].copy()
++
++    # Update success-history means (Lehmer mean for F, arithmetic for CR)
++    if len(success_F) > 0:
++        sum_sq = sum(f * f for f in success_F)
++        sum_f = sum(success_F)
++        if sum_f > 1e-12:
++            mu_F = (1.0 - c) * mu_F + c * (sum_sq / sum_f)
++        mu_CR = (1.0 - c) * mu_CR + c * (sum(success_CR) / len(success_CR))
++        mu_F = min(1.0, max(0.1, mu_F))
++        mu_CR = min(1.0, max(0.0, mu_CR))
++
++    improved = 1.0 if gbest_f < prev_gbest_f else 0.0
++    if self.controller is not None and train:
++        next_obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f,
++                    'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
++        if hasattr(self.controller, 'store_reward'):
++            self.controller.store_reward(improved, next_obs, done)
++
++    done = (evals >= self.max_evals)
++```
++
++**You must use this vectorized template as your starting point. It is acceptable to modify it, but do NOT revert to per-individual Python loops over mutation/crossover.**
++
+ **Meta-learning improvements:**
+ - The `controller` object passed to `__init__` implements a `step(obs)` method returning a dict of parameters (e.g., {{'F': ..., 'CR': ...}}). You can use these parameters in your algorithm.
+ - Improve the meta_learning.py controller architecture if needed (e.g., different state features, action space, NN architecture)

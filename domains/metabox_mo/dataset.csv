@@ -1,0 +1,10 @@
+problem_id,suite,instance,dimension,n_objectives,split
+wfg1_pymoo_d28_o5,pymoo_wfg,0,28,5,train
+wfg4_pymoo_d28_o5,pymoo_wfg,3,28,5,train
+wfg7_pymoo_d28_o5,pymoo_wfg,6,28,5,train
+wfg2_pymoo_d28_o5,pymoo_wfg,1,28,5,test
+wfg3_pymoo_d28_o5,pymoo_wfg,2,28,5,test
+wfg5_pymoo_d28_o5,pymoo_wfg,4,28,5,test
+wfg6_pymoo_d28_o5,pymoo_wfg,5,28,5,test
+wfg8_pymoo_d28_o5,pymoo_wfg,7,28,5,test
+wfg9_pymoo_d28_o5,pymoo_wfg,8,28,5,test

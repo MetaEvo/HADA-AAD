@@ -1,0 +1,82 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 0330df2..8b7677e 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -90,6 +90,8 @@ class DEOptimizer:
+         rng = np.random.RandomState(effective_seed)
+ 
+         # Latin Hypercube Sampling initialization for better initial coverage
++        initial_pop_size = pop_size
++        min_pop_size = max(4, int(0.2 * initial_pop_size))
+         pop = np.empty((pop_size, self.dim))
+         for j in range(self.dim):
+             sample_perm = rng.permutation(pop_size)
+@@ -106,6 +108,21 @@ class DEOptimizer:
+             fitness[i] = evaluate_problem(problem, pop[i])
+             evals += 1
+ 
++        # Opposition-based learning: evaluate mirrored points and keep the best N
++        if evals + pop_size <= self.max_evals:
++            opp_pop = lb + ub - pop
++            opp_fitness = np.full(pop_size, np.inf)
++            for i in range(pop_size):
++                if evals >= self.max_evals:
++                    break
++                opp_fitness[i] = evaluate_problem(problem, opp_pop[i])
++                evals += 1
++            all_pop = np.vstack([pop, opp_pop])
++            all_fit = np.concatenate([fitness, opp_fitness])
++            keep_order = np.argsort(all_fit)[:pop_size]
++            pop = all_pop[keep_order].copy()
++            fitness = all_fit[keep_order].copy()
++
+         # Track best
+         best_idx = int(np.argmin(fitness))
+         gbest_f = float(fitness[best_idx])
+@@ -142,8 +159,11 @@ class DEOptimizer:
+             
+             base_F = float(params.get('F', self.F))
+             base_CR = float(params.get('CR', self.CR))
+-            pbest_ratio = float(params.get('pbest_ratio', 0.2))
+-            archive_ratio = float(params.get('archive_ratio', 1.0))
++            progress = min(1.0, evals / max(1, self.max_evals))
++            default_pbest_ratio = max(0.05, 0.25 * (1.0 - 0.7 * progress))
++            default_archive_ratio = max(0.3, 1.0 - 0.5 * progress)
++            pbest_ratio = float(params.get('pbest_ratio', default_pbest_ratio))
++            archive_ratio = float(params.get('archive_ratio', default_archive_ratio))
+             
+             prev_gbest_f = gbest_f
+ 
+@@ -266,6 +286,16 @@ class DEOptimizer:
+ 
+                 k_mem = (k_mem + 1) % H
+ 
++            # L-SHADE: Linear Population Size Reduction (move from exploration to exploitation)
++            if pop_size > min_pop_size:
++                new_pop_size = max(min_pop_size, int(round(initial_pop_size + (min_pop_size - initial_pop_size) * (evals / max(1, self.max_evals)))))
++                if new_pop_size < pop_size:
++                    keep_order = np.argsort(fitness)[:new_pop_size]
++                    pop = pop[keep_order].copy()
++                    fitness = fitness[keep_order].copy()
++                    pop_size = new_pop_size
++                    archive_cap = max(1, pop_size)
++
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 58818d2..05d13ad 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -66,7 +66,10 @@ class DummyHeuristicController(ParamController):
+         # Also support DE-style parameters for multi-objective DE optimizers
+         F = 0.9 - 0.5 * t  # Large mutation early, refined late
+         CR = 0.9 - 0.4 * t # More crossover early for diversity
+-        return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR}
++        pbest_ratio = 0.30 - 0.20 * t
++        archive_ratio = 1.0
++        return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR,
++                'pbest_ratio': pbest_ratio, 'archive_ratio': archive_ratio}
+ 
+ 
+ class AdaptiveDEController(ParamController):

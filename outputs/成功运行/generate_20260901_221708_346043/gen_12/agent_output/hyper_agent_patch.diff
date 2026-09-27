@@ -1,0 +1,206 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 7216f67..26e6bef 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -71,6 +71,15 @@ CRITICAL REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
+    Step 3: Verify your changes were applied
+    Step 4: Respond with JSON
+ 
++## REQUIRED ACTIONS FOR THIS META-AGENT RUN (MANDATORY - DO NOT SKIP):
++1. **Find the latest generation**: The previous generation results are under `{eval_path}/`. List that directory to identify the highest `gen_N` folder.
++2. **Read the diff**: Use `editor` view on `{eval_path}/gen_N/<domain>_eval/agent_evals/all_patch.diff` (use the domain relevant to this run, e.g., `bbob_unconstrained`) to see exactly what the Task Agent changed.
++3. **Read the chat history**: Use `editor` view on `{eval_path}/gen_N/<domain>_eval/agent_evals/chat_history_task_agent.md` to check whether the Task Agent actually used the `editor` tool.
++4. **If the diff only has parameter tweaks, constant changes, or is empty**: Your updated `task_agent.py` prompt MUST be even more forceful about requiring structural algorithm replacement.
++5. **If evaluations failed**: Read `{eval_path}/gen_N/generate.log` for error messages, then update the `task_agent.py` prompt to explicitly warn against those exact failure modes (e.g., "do NOT call a method before defining it").
++6. **Always modify at least one of task_agent.py or hyper_agent.py** using `editor` with `command='str_replace'` - never just describe changes.
++7. **After making changes, write a short summary of what you changed and why to `/hada/hyper_agent_improvements.md`** (create the file with editor `create` if it does not exist, or `str_replace` to update).
++
+ ## YOUR PRIMARY JOB AS META AGENT:
+ 
+ Your job is to **improve the task_agent.py prompt** so that when the Task Agent runs, it ACTUALLY MODIFIES `/hada/metabbo/ec_algorithm.py` (or meta_learning.py) to implement a better evolutionary algorithm.
+diff --git a/task_agent.py b/task_agent.py
+index 91df38f..5a8a489 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -73,7 +73,16 @@ So your modified `ec_algorithm.py` MUST still provide:
+ - Each function evaluation MUST increment `evals` and stop when `evals >= self.max_evals`
+ 
+ ## WHAT TO IMPROVE (be aggressive - try completely different algorithms):
+-The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. The baseline score is ~0.88 on BBOB. You can improve dramatically by:
++
++### ⚠️ ABSOLUTE REQUIREMENT: YOU MUST REPLACE THE ALGORITHM, NOT JUST TWEAK PARAMETERS
++The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. Scores have plateaued because prior attempts only tweaked parameters (w, c1, c2, F, CR). **THIS IS A FAILURE MODE.**
++You MUST make a **structural change to the core search mechanism**:
++- Replace the mutation/crossover/selection logic in `DEOptimizer` with a fundamentally different algorithm (SHADE, JADE, CMA-ES, L-SHADE, etc.)
++- Add new mechanisms: external archive, parameter adaptation, population restart, local search, opposition-based learning, diversity maintenance
++- Changing constants, adding tiny random perturbations, or altering initialization only is NOT acceptable
++- If your diff only changes numeric literals (e.g., F=0.5 to F=0.7, swarm_size 40 to 50, adding `+ 0.1*rand`), it will be rejected
++
++You can improve dramatically by:
+ 
+ **Try these algorithm upgrades (in order of expected impact):**
+ 1. **SHADE / L-SHADE**: Success-History based Adaptive DE - CEC competition winner, adapts F and CR per-individual
+@@ -90,6 +99,82 @@ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR
+ - Add local search / hill-climbing as a final refinement
+ - Change population sizing, mutation strategies, crossover schemes
+ 
++### 🏆 CONCRETE SHADE IMPLEMENTATION GUIDE (use this as a template - DO NOT just tweak F and CR):
++If implementing **SHADE** (Success-History based Adaptive DE), here is the core algorithm structure to add inside `DEOptimizer.optimize()`:
++
++```python
++# SHADE-specific state (initialize before main loop):
++memory_size = 10  # H
++memory_F = np.full(memory_size, 0.5)   # MF
++memory_CR = np.full(memory_size, 0.5)  # MCR
++memory_idx = 0
++archive = np.empty((0, self.dim))      # external archive of inferior solutions
++
++# Inside the main loop, for each individual i:
++# 1. Select memory index randomly: r = rng.randint(0, memory_size)
++# 2. Sample CR_i from gaussian: CR_i = clip(rng.normal(memory_CR[r], 0.1), 0, 1)
++# 3. Sample F_i from cauchy: F_i = clip(rng.standard_cauchy() * 0.1 + memory_F[r], 0, 1); redraw if F_i <= 0
++# 4. pbest mutation (JADE/SHADE style):
++#    pbest = random from top p% of current population (p ~ 0.1-0.2)
++#    mutant = pop[i] + F_i * (pbest - pop[i]) + F_i * (pop[r1] - pop[r2])
++#    where r1, r2 are random distinct from population and archive
++# 5. Binomial crossover with CR_i
++# 6. Selection: if trial is better than pop[i], keep it and store the rejected parent in archive
++# 7. At end of generation, record successful F_i and CR_i values
++# 8. Update memory_MF[k] and memory_MCR[k] using weighted Lehmer mean of successful values; k = memory_idx % memory_size; memory_idx += 1
++# 9. Optionally resize archive to <= pop_size by randomly removing entries
++# 10. Optional restart: if population diversity (mean pairwise distance or std dev) drops below threshold, reinitialize worst half while keeping best
++
++# Make sure every function evaluation still increments `evals` and stops at `self.max_evals`.
++```
++
++### 🚀 VECTORIZED SHADE/JADE MUTATION (REQUIRED STYLE - DO THIS, NOT per-individual Python loops):
++Implement the per-generation trial generation with NumPy array operations, NOT with a `for i in range(n): for j in range(dim):` loop. A fast vectorized template is:
++
++```python
++# Sample per-individual F and CR vectors using NumPy (vectorized)
++mem_idx = rng.randint(0, memory_size, size=n)
++CR_i = np.clip(memory_CR[mem_idx] + 0.1 * rng.randn(n), 0.0, 1.0)
++F_i = memory_F[mem_idx] + 0.1 * rng.standard_cauchy(n)
++F_i = np.clip(F_i, 0.0, 1.0)
++F_i[F_i <= 0] = 0.1  # avoid non-positive F
++
++# pbest indices: random from the best p% of the current population
++sorted_idx = np.argsort(fitness[:n])
++pbest_count = max(1, int(n * pbest_p))
++pbest_rand_idx = rng.randint(0, pbest_count, size=n)
++pbest = pop[sorted_idx[pbest_rand_idx]]
++
++# r1, r2 random indices (vectorized)
++r1 = rng.randint(0, n, size=n)
++r1[r1 == np.arange(n)] = (r1[r1 == np.arange(n)] + 1) % n
++r2 = rng.randint(0, n, size=n)
++r2[r2 == np.arange(n)] = (r2[r2 == np.arange(n)] + 1) % n
++r2[r2 == r1] = (r2[r2 == r1] + 1) % n
++
++# Combine archive for r2 (for JADE/SHADE): randomly half the time use archive
++use_archive = (len(archive) > 0) & (rng.random(n) < 0.5)
++if np.any(use_archive):
++    arch_idx = rng.randint(0, len(archive), size=int(np.sum(use_archive)))
++    x2 = pop[r2]
++    x2[use_archive] = archive[arch_idx]
++else:
++    x2 = pop[r2]
++
++# current-to-pbest/1 mutation (fully vectorized)
++mutants = pop + F_i[:, None] * (pbest - pop) + F_i[:, None] * (pop[r1] - x2)
++
++# Binomial crossover (vectorized)
++CR_mask = rng.random((n, self.dim)) < CR_i[:, None]
++j_rand = rng.randint(0, self.dim, size=n)
++CR_mask[np.arange(n), j_rand] = True
++trials = np.where(CR_mask, mutants, pop)
++trials = np.clip(trials, lb, ub)
++new_pop = trials
++```
++
++**Alternatively, implementing JADE is very similar** but uses `current-to-pbest` mutation with a fixed archive and parameter adaptation via `mu_F` and `mu_CR` (not per-individual history). **Whatever you implement, keep the mutation/crossover fully vectorized with NumPy.**
++
+ **Meta-learning improvements:**
+ - The `controller` object passed to `__init__` implements a `step(obs)` method returning a dict of parameters (e.g., {{'F': ..., 'CR': ...}}). You can use these parameters in your algorithm.
+ - Improve the meta_learning.py controller architecture if needed (e.g., different state features, action space, NN architecture)
+@@ -99,8 +184,44 @@ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR
+ 2. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py`
+ 3. **READ the meta-learning code**: Use editor view on `/hada/metabbo/meta_learning.py`
+ 4. **MAKE your changes**: Use editor str_replace to actually modify the code files
+-5. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
+-6. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++   - **YOU MUST call `editor` with command='str_replace' at least once to modify `/hada/metabbo/ec_algorithm.py`**
++   - **If you have not modified ec_algorithm.py with a structural algorithm change, your response is INCOMPLETE.**
++5. **VERIFY your diff is structural**: Re-read the modified `ec_algorithm.py` and confirm you changed core search logic (mutation/crossover/selection/adaptation), not just numeric constants
++6. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
++7. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++
++## ⚠️ PERFORMANCE AND TIMEOUT WARNING (CRITICAL - A TIMEOUT SCORES ZERO):
++Previous attempts that structurally upgraded the algorithm (e.g., L-SHADE) sometimes became **so slow that the evaluation timed out (>120 seconds on a simple sphere problem with only 2000 evals)**. A timeout means the entire generation scores ZERO, which is worse than no change at all.
++
++**Concrete observed failure in gen_11:** The Task Agent correctly implemented L-SHADE (success-history memory, current-to-pbest mutation, archive, LPSR) but the first version used nested Python `for` loops over population *and* dimension with per-gene `rng.random()` calls. That version timed out (>120s) on a 20D sphere with only 2000 evals. It only worked after switching to NumPy array operations. **Do NOT repeat this mistake - vectorize from the start.**
++
++**You MUST keep the algorithm fast:**
++- **Prefer NumPy vectorized operations** over Python `for` loops over the population/dimension where possible. A nested `for i in range(pop_size): for j in range(dim):` in Python will be far too slow.
++- Do NOT implement the trial generation as pure Python per-gene loops if the dimension is large (20+). Use NumPy array operations for mutation and crossover masks.
++- Avoid expensive operations inside the innermost loops (e.g., `np.linalg.eig`, sorting the full population each iteration, pairwise distance matrices over the whole population every generation).
++- Keep archive operations cheap (simple append/truncate, not full scans).
++- The population size reduction (LPSR) must not cause tiny population + massive generation counts; check that the loop terminates normally.
++
++**MANDATORY SMOKE TEST before finishing:**
++Run a quick sanity check that your code completes FAST, e.g.:
++```python
++cd /hada && python - <<'PY'
++import sys; sys.path.insert(0, '/hada/metabbo')
++import numpy as np
++from ec_algorithm import DEOptimizer
++class Sphere:
++    def __init__(self, dim): self.dim = dim
++    def __call__(self, x): return float(np.sum(np.asarray(x)**2))
++for dim in [5, 20]:
++    p = Sphere(dim)
++    opt = DEOptimizer(dim, -5*np.ones(dim), 5*np.ones(dim), max_evals=2000,
++                     params={{'F':0.5,'CR':0.5}}, controller=None, swarm_size=40)
++    best, stats = opt.optimize(p, seed=42)
++    print('dim', dim, 'best', stats['gbest_f'], 'evals', stats['evals'], 'iters', stats['iterations'])
++print('SMOKE OK')
++PY
++```
++**If this smoke test takes more than ~30 seconds, STOP and optimize your implementation before submitting.**
+ 
+ ## REMEMBER:
+ - The evaluation code CANNOT be modified. It expects `DEOptimizer` class with the interface above.
+@@ -108,6 +229,7 @@ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR
+ - Do NOT call methods that don't exist.
+ - Your changes must be syntactically valid Python.
+ - Make meaningful structural changes to the algorithm - not just parameter tweaks.
++- **FAST CODE IS AS IMPORTANT AS CORRECT CODE - a timeout scores zero.**
+ 
+ Now here is the specific task input:
+ """
+diff --git a/hyper_agent_improvements.md b/hyper_agent_improvements.md
+new file mode 100644
+index 0000000..8cdfcfb
+--- /dev/null
++++ b/hyper_agent_improvements.md
+@@ -0,0 +1,20 @@
++# Meta Agent Improvements
++
++## Changes made this generation:
++
++### 1. task_agent.py prompt improvements
++- Added **absolute requirement** that the Task Agent must make a structural change to the core search mechanism, not just tweak parameters. Explicitly lists failure modes (changing F, CR, swarm_size, adding tiny perturbations) as unacceptable.
++- Added a **concrete SHADE implementation guide** with step-by-step pseudocode for success-history memory, current-to-pbest mutation, archive, and Lehmer mean updates.
++- Added a **vectorized NumPy mutation/crossover template** for SHADE/JADE, with explicit code showing how to sample F/CR per-individual, do pbest mutation, and binomial crossover using NumPy array operations instead of per-individual Python loops.
++- Added a **performance/timeout warning** section explaining that a timeout scores zero. Documented the concrete gen_11 failure where an L-SHADE implementation with nested Python for-loops timed out (>120s on a 20D sphere with 2000 evals).
++- Made the smoke test **mandatory** before finishing, with a concrete Python script to run.
++- Emphasized that FAST CODE IS AS IMPORTANT AS CORRECT CODE.
++
++### 2. hyper_agent.py prompt improvements
++- Added mandatory step-by-step actions for the Meta Agent: find the latest generation, read the diff, read chat history, and react to parameter-only tweaks or evaluation failures.
++- Added a requirement to write a summary of changes to `/hada/agent_output/hyper_agent_improvements.md`.
++
++## Rationale
++- Prior generations plateaued because Task Agents only tweaked PSO/DE parameter values instead of replacing the algorithm.
++- When Task Agents finally attempted structural changes (L-SHADE), the first implementation was too slow (nested Python loops) and timed out, scoring zero.
++- These prompt changes should push future Task Agents to: (1) actually replace the search algorithm, and (2) do so with vectorized NumPy code that runs fast enough to pass the evaluation timeout.

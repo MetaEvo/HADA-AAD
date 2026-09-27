@@ -1,0 +1,126 @@
+diff --git a/task_agent.py b/task_agent.py
+index e78c391..2f630a8 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -77,59 +77,80 @@ So your modified `ec_algorithm.py` MUST still provide:
+ ### ⚠️ ABSOLUTE REQUIREMENT: YOU MUST REPLACE THE ALGORITHM, NOT JUST TWEAK PARAMETERS
+ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. Scores have plateaued because prior attempts only tweaked parameters (w, c1, c2, F, CR). **THIS IS A FAILURE MODE.**
+ 
+-**CURRENT STATUS (gen_16):** A SHADE (Success-History Adaptive DE) was already implemented in `/hada/metabbo/ec_algorithm.py` by a previous Task Agent. It scored **0.9244**, which is **BELOW the best-known score of 0.93121** (from gen_11). So just adding SHADE is NOT enough. You MUST either (a) add a new mechanism on top of the existing SHADE (LPSR, restart, local search, OBL, ensemble), or (b) switch to a different algorithm family (CMA-ES, jDE, SaNSDE, CoDE) that can perform better.
++**CURRENT STATUS (gen_37):** The current `ec_algorithm.py` already contains a JADE/SHADE-inspired adaptive DE (external archive, current-to-pbest mutation, success-history F/CR memory). It scored **0.8861**, which is **BELOW the best-known score of 0.93121**. Both plain parameter tweaks AND SHADE/JADE-style DE variants have now been tried and plateaued. **DO NOT submit another DE variant with the same mutation/archive/memory recipe.** You MUST switch to a fundamentally different algorithm family or add a major new layer (e.g., CMA-ES core, CMA-ES local search on top of DE, restart with latin hypercube, niching, ensemble of DE+CMA-ES).
++
++**STRATEGIC RECOMMENDATION: Implement CMA-ES (Covariance Matrix Adaptation Evolution Strategy), ideally with restarts (IPOP-CMA-ES or BIPOP-CMA-ES).** CMA-ES is the state-of-the-art for continuous black-box optimization on BBOB and is very likely to beat the current DE variants. If you instead keep a DE-style algorithm, it must include a clearly novel mechanism that is not just another archive + pbest + memory (e.g., ensemble of multiple mutation strategies chosen adaptively, competitive parameter control, or a restart/local-search hybridization).
++
+ You MUST make a **structural change to the core search mechanism**:
+ - Replace the mutation/crossover/selection logic in `DEOptimizer` with a fundamentally different algorithm (SHADE, JADE, CMA-ES, L-SHADE, etc.)
+ - Add new mechanisms: external archive, parameter adaptation, population restart, local search, opposition-based learning, diversity maintenance
+ - Changing constants, adding tiny random perturbations, or altering initialization only is NOT acceptable
+ - If your diff only changes numeric literals (e.g., F=0.5 to F=0.7, swarm_size 40 to 50, adding `+ 0.1*rand`), it will be rejected
+ 
+-You can improve dramatically by:
+-
+-**Try these algorithm upgrades (in order of expected impact):**
+-1. **SHADE / L-SHADE**: Success-History based Adaptive DE - CEC competition winner, adapts F and CR per-individual
+-2. **JADE**: Adaptive DE with external archive and current-to-pbest mutation
+-3. **CMA-ES**: Covariance Matrix Adaptation Evolution Strategy - state-of-the-art for continuous black-box optimization
+-4. **Hybrid DE variants**: Add mechanisms like opposition-based learning, restart, local search, diversity maintenance
+-5. **Improved initialization**: Latin Hypercube Sampling, Sobol sequence, or opposite-based initialization
++## CRITICAL - THE #1 RECOMMENDATION: IMPLEMENT CMA-ES
+ 
+-**Structural changes you can make:**
+-- Replace the `DEOptimizer` internals with a completely different algorithm (SHADE, JADE, CMA-ES) while keeping the same class/method interface
+-- Add an external archive for storing inferior solutions (JADE-style)
+-- Implement parameter adaptation (SHADE-style success-history memory)
+-- Add population restart when diversity drops
+-- Add local search / hill-climbing as a final refinement
+-- Change population sizing, mutation strategies, crossover schemes
++**Since gen_37 already contains SHADE/JADE, do NOT implement SHADE, JADE, archive + pbest, or success-history memory again.** Those are now “done” and scored 0.886. The highest-leverage move now is **CMA-ES (Covariance Matrix Adaptation Evolution Strategy)** with restarts.
+ 
+-### 🏆 CONCRETE SHADE IMPLEMENTATION GUIDE (use this as a template - DO NOT just tweak F and CR):
+-If implementing **SHADE** (Success-History based Adaptive DE), here is the core algorithm structure to add inside `DEOptimizer.optimize()`:
++### 🏆 CONCRETE CMA-ES IMPLEMENTATION GUIDE (USE THIS AS YOUR PRIMARY TEMPLATE):
++Implement a fast, vectorizable CMA-ES inside the `DEOptimizer` class while preserving the required interface.
+ 
+ ```python
+-# SHADE-specific state (initialize before main loop):
+-memory_size = 10  # H
+-memory_F = np.full(memory_size, 0.5)   # MF
+-memory_CR = np.full(memory_size, 0.5)  # MCR
+-memory_idx = 0
+-archive = np.empty((0, self.dim))      # external archive of inferior solutions
+-
+-# Inside the main loop, for each individual i:
+-# 1. Select memory index randomly: r = rng.randint(0, memory_size)
+-# 2. Sample CR_i from gaussian: CR_i = clip(rng.normal(memory_CR[r], 0.1), 0, 1)
+-# 3. Sample F_i from cauchy: F_i = clip(rng.standard_cauchy() * 0.1 + memory_F[r], 0, 1); redraw if F_i <= 0
+-# 4. pbest mutation (JADE/SHADE style):
+-#    pbest = random from top p% of current population (p ~ 0.1-0.2)
+-#    mutant = pop[i] + F_i * (pbest - pop[i]) + F_i * (pop[r1] - pop[r2])
+-#    where r1, r2 are random distinct from population and archive
+-# 5. Binomial crossover with CR_i
+-# 6. Selection: if trial is better than pop[i], keep it and store the rejected parent in archive
+-# 7. At end of generation, record successful F_i and CR_i values
+-# 8. Update memory_MF[k] and memory_MCR[k] using weighted Lehmer mean of successful values; k = memory_idx % memory_size; memory_idx += 1
+-# 9. Optionally resize archive to <= pop_size by randomly removing entries
+-# 10. Optional restart: if population diversity (mean pairwise distance or std dev) drops below threshold, reinitialize worst half while keeping best
+-
+-# Make sure every function evaluation still increments `evals` and stops at `self.max_evals`.
++# Inside DEOptimizer.__init__: store problem bounds etc.
++
++# Inside optimize(), initialize CMA-ES state:
++n = self.dim
++lambda_ = max(swarm_size or 40, 4 + int(3 * np.log(n)))  # offspring / population
++mu = lambda_ // 2  # parent count
++weights = np.log(mu + 0.5) - np.log(np.arange(1, mu + 1))
++weights /= weights.sum()
++mueff = 1.0 / np.sum(weights**2)
++# Strategy parameters (standard CMA-ES defaults)
++cc = (4 + mueff / n) / (n + 4 + 2 * mueff / n)
++cs = (mueff + 2) / (n + mueff + 5)
++c1 = 2 / ((n + 1.3)**2 + mueff)
++cmu = min(1 - c1, 2 * (mueff - 2 + 1/mueff) / ((n + 2)**2 + mueff))
++damps = 1 + 2 * max(0, np.sqrt((mueff - 1) / (n + 1)) - 1) + cs
++
++# Mean and step-size / covariance initialization:
++mean = (lb + ub) / 2  # or random init
++sigma = 0.25 * (ub - lb)  # initial step size
++B = np.eye(n)
++D = np.ones(n)
++C = np.eye(n)
++pc = np.zeros(n)
++ps = np.zeros(n)
++
++# Main loop:
++while evals < max_evals:
++    # 1. Sample offspring (vectorized):
++    #    z = rng.randn(lambda_, n)  (each row is N(0,I))
++    #    y = z @ (B * D)            (transform into N(0,C))
++    #    pop = mean + sigma * y
++    # 2. Clip/reflect to bounds.
++    # 3. Evaluate each of the lambda_ offspring using the SAME evaluate_problem call.
++    # 4. Sort by fitness, take the best mu to form the new mean:
++    #    mean = mean + cm_or_1 * sum(weights[i] * (pop[sorted[i]] - mean))
++    # 5. Update ps, pc, C, B, D (evolution path / covariance update) using NumPy.
++    #    Optionally keep it simpler: use a diagonal C update first, then add full covariance if fast.
++    # 6. Optional restart: if sigma < 1e-12 or improvement stalls for many generations,
++    #    double population size or reinitialize mean/sigma (IPOP-style).
++
++# VERY IMPORTANT:
++# - Use NumPy matrix operations, NOT Python `for i in range(lambda_)` for sampling/sorting.
++# - The only Python loop allowed is the one that calls `evaluate_problem` per individual.
++# - Keep `evals` incrementing inside that same loop and break at max_evals.
++# - Return stats with gbest and gbest_f as required.
+ ```
+ 
++If CMA-ES is too complex, the fallback is a **significant hybrid**: keep the existing DE but add a **CMA-ES or Nelder-Mead local search phase** on the current best for the last few hundred evals, or a **restart mechanism (IPOP-style population doubling)** that reinitializes with Latin Hypercube Sampling when diversity drops.
++
++**Structural changes you can make (in addition to CMA-ES):**
++- Replace the `DEOptimizer` internals with a completely different algorithm (CMA-ES, etc.) while keeping the same class/method interface
++- Add restart with population doubling, Latin Hypercube Sampling, or opposition-based reinitialization
++- Add a local search / hill-climbing final refinement using the remaining eval budget
++- Add niching / multi-modal handling
++- Hybridize: DE for exploration + CMA-ES for exploitation
++
+ ### 🚀 VECTORIZED SHADE/JADE MUTATION (REQUIRED STYLE - DO THIS, NOT per-individual Python loops):
+ Implement the per-generation trial generation with NumPy array operations, NOT with a `for i in range(n): for j in range(dim):` loop. A fast vectorized template is:
+ 

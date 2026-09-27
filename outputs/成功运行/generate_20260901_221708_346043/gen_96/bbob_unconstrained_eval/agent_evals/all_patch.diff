@@ -1,0 +1,360 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..2389251 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -1,9 +1,10 @@
+-"""Differential Evolution optimizer for cocoex problems.
++"""Adaptive Differential Evolution optimizer for cocoex problems.
+ 
+-This module provides a `DEOptimizer` class that is controlled by a DQN agent
+-for hyperparameter optimization. The algorithm accepts an optional `controller`
+-object implementing the ParamController interface to allow dynamic parameter
+-adjustment (F, CR).
++This module provides a `DEOptimizer` class implementing a JADE/SHADE-style
++hybrid with an external archive, pbest-directed mutation, and success-history
++based parameter adaptation. It is controlled by an optional `controller` object
++implementing the ParamController interface, which can dynamically bias the F and
++CR memory slots used by the optimizer.
+ """
+ 
+ from typing import Optional, Dict, Any, Tuple
+@@ -88,19 +89,47 @@ class DEOptimizer:
+         effective_seed = seed if seed is not None else _config_seed
+         rng = np.random.RandomState(effective_seed)
+ 
+-        # Initialize population - uniform random initialization
+-        pop = rng.uniform(lb, ub, (pop_size, self.dim))
+-        
+-        # Evaluate initial population
++        # SHADE / JADE style control-parameter memory
++        H = 20
++        mu_F = np.full(H, 0.5)
++        mu_CR = np.full(H, 0.5)
++        memory_index = 0
++        archive = np.empty((0, self.dim))
++
++        # L-SHADE style linear population size reduction (start large, shrink later)
++        init_pop_size = int(pop_size)
++        max_pop_size = int(pop_size)
++        min_pop_size = max(4, int(self.dim * 0.1))
++
++        # Initialize population with opposition-based learning (OBL)
+         evals = 0
+-        fitness = np.full(pop_size, np.inf)
+-        
+-        for i in range(pop_size):
+-            if evals >= self.max_evals:
+-                break
+-            fitness[i] = evaluate_problem(problem, pop[i])
++        raw_pop = np.empty((init_pop_size, self.dim))
++        for j in range(self.dim):
++            perm = rng.permutation(init_pop_size)
++            raw_pop[:, j] = lb[j] + (ub[j] - lb[j]) * (perm + rng.uniform(size=init_pop_size)) / init_pop_size
++        # Small jitter to break ties, then clip to bounds
++        raw_pop += rng.uniform(-0.02, 0.02, size=raw_pop.shape)
++        raw_pop = np.clip(raw_pop, lb, ub)
++
++        # Build opposition candidates reflected around the domain center
++        center = (lb + ub) / 2.0
++        opp_pop = center * 2.0 - raw_pop
++        opp_pop = np.clip(opp_pop, lb, ub)
++        candidates = np.vstack([raw_pop, opp_pop])
++        cand_fit = np.full(len(candidates), np.inf)
++        n_cand_eval = min(len(candidates), max(0, self.max_evals))
++        for i in range(n_cand_eval):
++            cand_fit[i] = evaluate_problem(problem, candidates[i])
+             evals += 1
+ 
++        # Keep the best pop_size individuals (ties broken by order)
++        n_keep = min(init_pop_size, n_cand_eval)
++        keep_order = np.argsort(cand_fit[:n_cand_eval], kind='mergesort')[:n_keep]
++        pop = candidates[keep_order].copy()
++        fitness = cand_fit[keep_order].copy()
++        pop_size = len(pop)
++        start_size = len(pop)
++
+         # Track best
+         best_idx = int(np.argmin(fitness))
+         gbest_f = float(fitness[best_idx])
+@@ -114,7 +143,7 @@ class DEOptimizer:
+         iteration = 0
+         done = False
+         
+-        while not done:
++        while not done and evals < self.max_evals:
+             iteration += 1
+             params = dict(self.params)
+             if self.controller is not None:
+@@ -124,48 +153,131 @@ class DEOptimizer:
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+             
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
+-            
++            # Allow the meta-controller to bias the current memory slot, but keep it safe.
++            F_control = float(np.clip(params.get('F', mu_F[memory_index]), 0.1, 1.0))
++            CR_control = float(np.clip(params.get('CR', mu_CR[memory_index]), 0.0, 1.0))
++            mu_F[memory_index] = F_control
++            mu_CR[memory_index] = CR_control
++
+             prev_gbest_f = gbest_f
+-            
+-            # Generate trial vectors
++
++            # Fitness ordering for pbest selection
++            order = np.argsort(fitness, kind='mergesort')
++            p_num = max(2, int(len(fitness) * 0.15))
++
++            successful_F = []
++            successful_CR = []
++            deltas = []
++
+             new_pop = np.copy(pop)
++            new_fit = np.copy(fitness)
++
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
++                # pbest from the top p_num fraction
++                p_idx = order[int(rng.randint(0, p_num))]
++
++                # Two distinct random vectors different from current
+                 candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
++                if len(candidates) >= 3:
++                    r1, r2, r3 = rng.choice(candidates, size=3, replace=False)
++                else:
++                    # Very small population fallback; pick valid distinct indices
++                    r1 = 0
++                    r2 = 1 if pop_size > 1 else 0
++                    r3 = 2 % pop_size
++                    if r2 == i:
++                        r2 = (r2 + 1) % pop_size
++                    if r3 == i or r3 == r2:
++                        r3 = (r3 + 1) % pop_size
++
++                # Adaptive F (Cauchy) and CR (Normal) around current memory values
++                F_i = float(np.clip(rng.standard_cauchy() * 0.1 + mu_F[memory_index], 0.0, 1.0))
++                CR_i = float(np.clip(rng.randn() * 0.1 + mu_CR[memory_index], 0.0, 1.0))
++
++                # Occasionally use classic rand/1 for extra exploration, otherwise current-to-pbest/1
++                if rng.random() < 0.25:
++                    # rand/1 mutation
++                    v = pop[r1] + F_i * (pop[r2] - pop[r3])
+                 else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
+-                
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
+-                
+-                # Mutation and crossover
+-                j_rand = rng.randint(0, self.dim)
++                    # Differential vector: use archive half the time when available
++                    if len(archive) > 0 and rng.random() < 0.5:
++                        a_idx = int(rng.randint(0, len(archive)))
++                        diff_vec = pop[r1] - archive[a_idx]
++                    else:
++                        diff_vec = pop[r1] - pop[r2]
++
++                    # current-to-pbest/1 mutation
++                    v = pop[i] + F_i * (pop[p_idx] - pop[i]) + F_i * diff_vec
++
++                # Binomial crossover
++                j_rand = int(rng.randint(0, self.dim))
++                u = np.copy(pop[i])
+                 for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
+-                
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
+-            
+-            # Evaluate trial vectors
+-            for i in range(pop_size):
++                    if rng.random() < CR_i or j == j_rand:
++                        u[j] = v[j]
++
++                # Boundary handling: random reinitialization in the violated dimension
++                for j in range(self.dim):
++                    if u[j] < lb[j] or u[j] > ub[j]:
++                        u[j] = rng.uniform(lb[j], ub[j])
++
+                 if evals >= self.max_evals:
+                     done = True
+                     break
+-                trial_f = evaluate_problem(problem, new_pop[i])
++                trial_f = evaluate_problem(problem, u)
+                 evals += 1
+-                
+-                # Greedy selection
+-                if trial_f < fitness[i]:
+-                    pop[i] = new_pop[i].copy()
+-                    fitness[i] = trial_f
+-                    if trial_f < gbest_f:
+-                        gbest_f = trial_f
+-                        gbest = new_pop[i].copy()
+-            
++
++                if trial_f < new_fit[i]:
++                    # Add the replaced individual to the archive (bounded in size)
++                    if len(archive) < 2 * pop_size:
++                        archive = np.vstack([archive, pop[i].reshape(1, -1)])
++                    new_pop[i] = u.copy()
++                    new_fit[i] = trial_f
++                    successful_F.append(F_i)
++                    successful_CR.append(CR_i)
++                    deltas.append(abs(float(trial_f - fitness[i])))
++
++            # Commit the generation
++            pop = new_pop
++            fitness = new_fit
++            best_idx = int(np.argmin(fitness))
++            if fitness[best_idx] < gbest_f:
++                gbest_f = float(fitness[best_idx])
++                gbest = pop[best_idx].copy()
++
++            # Trim archive if it grew too large
++            if len(archive) > 2 * pop_size:
++                keep_idx = rng.choice(len(archive), size=2 * pop_size, replace=False)
++                archive = archive[keep_idx]
++
++            # L-SHADE style linear population size reduction
++            target_size = max(min_pop_size, int(round(start_size - (start_size - min_pop_size) * (evals / max(1, self.max_evals)))))
++            if target_size < pop_size:
++                keep_order = np.argsort(fitness, kind='mergesort')[:target_size]
++                pop = pop[keep_order].copy()
++                fitness = fitness[keep_order].copy()
++                pop_size = target_size
++                # Trim archive proportionally after population reduction
++                if len(archive) > 2 * pop_size:
++                    keep_idx = rng.choice(len(archive), size=2 * pop_size, replace=False)
++                    archive = archive[keep_idx]
++
++            # Update memory with successful parameters, weighted by improvement
++            if len(successful_F) > 0:
++                w = np.array(deltas, dtype=float)
++                s = float(np.sum(w))
++                if s > 1e-12:
++                    w = w / s
++                else:
++                    w = np.ones_like(w) / len(w)
++
++                sf = np.array(successful_F, dtype=float)
++                if np.sum(w * sf) > 1e-12:
++                    mu_F[memory_index] = float(np.sum(w * sf * sf) / np.sum(w * sf))
++                scr = np.array(successful_CR, dtype=float)
++                mu_CR[memory_index] = float(np.sum(w * scr))
++                memory_index = (memory_index + 1) % H
++
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..c970628 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -6,6 +6,7 @@ the hook that a DQN-based controller should implement.
+ """
+ from abc import ABC, abstractmethod
+ from typing import Dict, Any
++import numpy as np
+ 
+ # Import global configuration
+ import sys
+@@ -101,8 +102,9 @@ class AdaptiveDEController(ParamController):
+ 
+     def step(self, observation: Dict[str, Any]) -> Dict[str, float]:
+         self.it = observation.get('iteration', self.it + 1)
+-        max_iter = max(1, int(observation.get('max_evals', 10000) / 100))
+-        t = min(1.0, float(self.it) / max_iter)
++        evals = float(observation.get('evals', 0.0))
++        max_evals = float(observation.get('max_evals', max(1000.0, evals)))
++        t = min(1.0, evals / max(1.0, max_evals))
+ 
+         # Smooth progress-based decay from exploration to exploitation
+         F = self.f_start * (1 - t) + self.f_end * t
+@@ -110,6 +112,7 @@ class AdaptiveDEController(ParamController):
+ 
+         # Detect stagnation: no improvement in best fitness for several iterations
+         current_gbest = observation.get('gbest_f', None)
++        initial_gbest = observation.get('initial_gbest_f', current_gbest)
+         if current_gbest is not None and self.last_gbest is not None:
+             if current_gbest < self.last_gbest - 1e-12:
+                 self.stagnation_count = 0
+@@ -123,6 +126,14 @@ class AdaptiveDEController(ParamController):
+             CR = min(1.0, CR + self.stagnation_boost)
+             self.stagnation_count = 0
+ 
++        # Boost exploitation when substantial relative improvement is being made
++        if current_gbest is not None and initial_gbest is not None and initial_gbest != 0.0 and np.isfinite(initial_gbest) and np.isfinite(current_gbest):
++            rel_improve = (initial_gbest - current_gbest) / abs(initial_gbest)
++            if rel_improve > 0.3:
++                # Strong progress: reduce F slightly and increase CR to preserve building blocks
++                F = max(self.f_end, F * 0.92)
++                CR = min(1.0, CR * 1.08)
++
+         # Switch strategy: rand/1 early for exploration, jade later for convergence
+         if t < self.strategy_change_iter:
+             strategy = 'rand/1'
+@@ -131,10 +142,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(np.log(self.epsilon_start))
++        log_eps_end = float(np.log(self.epsilon_end))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(np.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.
+diff --git a/task_agent.py b/task_agent.py
+index 88e7e8f..01d8f3f 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -12,6 +12,43 @@ from agent.llm_withtools import chat_with_agent
+ from utils.common import extract_jsons
+ 
+ 
++def _domain_algorithm_guidance(domain: str) -> str:
++    """Return domain-specific algorithm replacement guidance."""
++    if 'bbob_unconstrained' in domain or 'bbob' in domain:
++        return """
++### 🔥 PROVEN BEST RESULT (0.93121)
++Reference: /hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff
++
++### HARD ALGORITHM REPLACEMENT MANDATE (REJECTION IF NOT FOLLOWED)
++The previous generation's patch (gen_54) only increased `memory_size` from 5 to 10 in an existing SHADE/DE variant. This is REJECTED. The task agent has repeatedly stayed within the DE/SHADE/JADE family for 50+ generations, causing scores to plateau.
++
++**You MUST implement EITHER CMA-ES OR GLPSO from scratch as the core search algorithm.** Any submission that still uses DE/binomial-crossover/current-to-pbest mutation as the primary operator will be considered a FAILURE, even if it adds OBL, LPSR, archives, or other add-ons.
++
++### MANDATORY: IMPLEMENT CMA-ES OR GLPSO
++#### CMA-ES requirements (at least 100 NEW lines):
++- Mean vector `m`, step-size `sigma`, covariance `C` (identity init)
++- Evolution paths `p_sigma`, `p_c` with learning rates `c_sigma`, `c_c`
++- Rank-one + rank-mu covariance update (`c_1`, `c_mu`)
++- Sample population from `m + sigma * N(0, C)` via eigendecomposition `B, D` (or Cholesky)
++- Weighted recombination of top `mu` solutions
++- Step-size adaptation from cumulative path length
++
++#### GLPSO requirements (at least 100 NEW lines):
++- Comprehensive learning: each particle velocity update uses an exemplar's personal best
++- Refreshing gap mechanism (`refresh_gap`) to reassign exemplars on stagnation
++- Inertia `w`, cognitive `c1`, social `c2`, velocity clamping, boundary handling
++
++The `DEOptimizer` class name, `__init__` signature, `optimize()` signature, and stats keys MUST stay identical (or use `DEOptimizer = CMAESOptimizer` alias).
++
++### ABSOLUTELY FORBIDDEN (AUTOMATIC REJECTION)
++- Tweaking F, CR, w, c1, c2, pop_size, memory_size, pbest_p, restart thresholds
++- Keeping DE/SHADE/JADE mutation-crossover-selection as the main loop
++- Adding OBL/LPSR/archive/restart on top of the existing DE loop without replacing it
++- Submitting a patch that only edits `memory_size = 10` or similar one-line constant changes
++"""
++    return ""
++
++
+ class TaskAgent(AgentSystem):
+     def forward(self, inputs):
+         """

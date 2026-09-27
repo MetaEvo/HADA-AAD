@@ -1,0 +1,105 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 3a261ac..b5e622c 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -76,6 +76,14 @@ CRITICAL REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
+ 2. **Read the diff**: Use `editor` view on `{eval_path}/gen_N/<domain>_eval/agent_evals/all_patch.diff` (use the domain relevant to this run, e.g., `bbob_unconstrained`) to see exactly what the Task Agent changed.
+ 3. **Read the chat history**: Use `editor` view on `{eval_path}/gen_N/<domain>_eval/agent_evals/chat_history_task_agent.md` to check whether the Task Agent actually used the `editor` tool.
+ 4. **If the diff only has parameter tweaks, constant changes, or is empty**: Your updated `task_agent.py` prompt MUST be even more forceful about requiring structural algorithm replacement.
++
++4b. **ALGORITHM FAMILY TRACKING (CRITICAL - PREVENT PLATEAU)**:
++   - Keep a mental record of the algorithm family in the previous diffs. If the last 2+ generations used DE/SHADE/JADE variants (even with OBL/LPSR/archive additions), you MUST update the `task_agent.py` prompt to **explicitly ban all DE-family mutation/crossover** and demand EITHER:
++     - **CMA-ES** with mean `m`, covariance `C`, step-size `sigma`, evolution paths `p_sigma`/`p_c`, rank-one/rank-mu updates, eigendecomposition sampling, weighted recombination (at least 100 NEW lines), OR
++     - **GLPSO** with comprehensive-learning exemplars, refreshing gap `refresh_gap`, velocity/position updates, inertia/cognitive/social weights (at least 100 NEW lines).
++   - Include this exact rejection criteria in task_agent.py: *"If your patch still contains DE/current-to-pbest/binomial-crossover as the core loop, your submission is rejected."*
++   - Do NOT accept L-SHADE, JADE, jDE, SaNSDE, CoDE, or any DE-variant as satisfying the algorithm replacement requirement.
++
+ 5. **If evaluations failed**: Read `{eval_path}/gen_N/generate.log` for error messages, then update the `task_agent.py` prompt to explicitly warn against those exact failure modes (e.g., "do NOT call a method before defining it").
+ 6. **Always modify at least one of task_agent.py or hyper_agent.py** using `editor` with `command='str_replace'` - never just describe changes.
+ 7. **After making changes, write a short summary of what you changed and why to `/hada/hyper_agent_improvements.md`** (create the file with editor `create` if it does not exist, or `str_replace` to update).
+diff --git a/hyper_agent_improvements.md b/hyper_agent_improvements.md
+index c77d20d..2f6291b 100644
+--- a/hyper_agent_improvements.md
++++ b/hyper_agent_improvements.md
+@@ -1,11 +1,15 @@
+ # Meta-Agent Improvements
+ 
+-## Changes Made
++## Changes Made (Gen 55)
+ 
+ ### task_agent.py
+ 1. **Added FORBIDDEN FILES section** - Explicitly prohibits the Task Agent from modifying `task_agent.py`, `hyper_agent.py`, `domains/`, `agent/`, `utils/`, `config.py`, `generate_loop.py`, `harness.py`, `report.py`. This prevents the Task Agent from wasting effort editing protected files or its own prompt.
+ 2. **Added PERFORMANCE / TIMEOUT WARNING** - Since a timeout scores zero, the Task Agent is now explicitly warned to use NumPy vectorized operations, avoid expensive per-iteration computations, and run a mandatory smoke test (20D sphere, 2000 evals, <30s) before finishing.
+ 3. **Added VECTORIZED IMPLEMENTATION PATTERN** - Provided a concrete NumPy vectorized current-to-pbest/1 mutation code template so the Task Agent does not write slow per-individual Python loops (a known cause of gen_11 timeout).
++4. **HARD ALGORITHM REPLACEMENT MANDATE (NEW - Gen 55)** - Replaced the "RECOMMENDED REPLACEMENTS" guidance with an explicit rejection of any DE-family variant. The gen_54 diff only changed `memory_size` from 5 to 10 in SHADE, showing 50+ generations of DE-family plateau at ~0.9075. Task Agent is now forced to implement either:
++   - **CMA-ES** from scratch: mean `m`, covariance `C`, step-size `sigma`, evolution paths `p_sigma`/`p_c`, rank-one/rank-mu update, eigendecomposition sampling, weighted recombination (at least 100 NEW lines)
++   - **GLPSO** from scratch: comprehensive learning exemplars, refreshing gap, inertia/cognitive/social weights, velocity clamping (at least 100 NEW lines)
++   - Any DE/current-to-pbest/binomial-crossover core loop is automatically REJECTED
+ 
+ ### hyper_agent.py
+ 1. **Added REQUIRED ACTIONS FOR THIS META-AGENT RUN** - Forces the Meta Agent to:
+@@ -15,12 +19,15 @@
+    - Handle evaluation failures by reading logs and updating the prompt with specific warnings
+    - Always modify at least one of task_agent.py/hyper_agent.py
+    - Write a summary to `/hada/hyper_agent_improvements.md`
++2. **Added ALGORITHM FAMILY TRACKING (NEW - Gen 55)** - Meta Agent must track algorithm families across consecutive diffs. If 2+ generations used DE/SHADE/JADE variants (even with OBL/LPSR/archive additions), it MUST update task_agent.py to explicitly ban all DE-family mutation/crossover and demand CMA-ES or GLPSO. Rejects L-SHADE, JADE, jDE, SaNSDE, CoDE as satisfying algorithm replacement.
+ 
+ ## Rationale
+ 
+-Previous generations showed Task Agents only making small parameter tweaks (F, CR, w, c1, c2, population size) without changing the core algorithm. The prompt already had strong language about replacing algorithms, but the new changes add:
++Previous generations showed Task Agents only making small parameter tweaks (F, CR, w, c1, c2, population size) without changing the core algorithm. The gen_54 diff confirmed this: only `memory_size = 10` was changed. The prompt now has:
+ - Clear boundaries on which files are editable
+ - A concrete performance warning to prevent structural upgrades from timing out (a known failure in gen_11)
+ - A mandatory smoke test to catch slow implementations before submission
++- **Hard algorithm replacement mandate** forcing CMA-ES or GLPSO, rejecting any DE-family variant
++- **Algorithm family tracking** in Meta Agent to prevent future DE-plateaus
+ 
+-These changes should push the Task Agent toward implementing genuinely different algorithms (SHADE, JADE, CMA-ES, etc.) while keeping the code fast enough to pass evaluation time limits.
+\ No newline at end of file
++These changes should push the Task Agent toward implementing genuinely different algorithms (CMA-ES, GLPSO) while keeping the code fast enough to pass evaluation time limits.
+\ No newline at end of file
+diff --git a/task_agent.py b/task_agent.py
+index 9ab022e..ecea26d 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -16,14 +16,32 @@ def _domain_algorithm_guidance(domain: str) -> str:
+     """Return domain-specific algorithm replacement guidance."""
+     if 'bbob_unconstrained' in domain or 'bbob' in domain:
+         return """
+-### RECOMMENDED REPLACEMENTS (pick ONE and implement fully):
+-1. **L-SHADE** (best for BBOB): Keep the DE skeleton but add:
+-   - Proper current-to-pbest/1 mutation with archive (the existing code only has a partial pbest, not a correct JADE-style archive)
+-   - Linear Population Size Reduction (LPSR): shrink population size as budget is consumed
+-   - Cauchy sampling for F, Normal sampling for CR, Lehmer-mean updates to memories
+-2. **JADE**: Replace the mutation with current-to-pbest/1 (using an archive), and adapt F/CR per-individual via Cauchy/Normal sampling with Lehmer mean updates.
+-3. **CMA-ES**: Add a new `CMAESOptimizer` class (copy the DEOptimizer skeleton, replace the population generation with `mean + sigma * B @ D @ randn`) and alias `DEOptimizer = CMAESOptimizer` at the bottom of the file so the caller still works.
+-4. **DE/current-to-pbest/1 with archive** (JADE-lite): minimal but structural - it changes the actual search operator, not just a constant.
++### HARD ALGORITHM REPLACEMENT MANDATE (REJECTION IF NOT FOLLOWED)
++The previous generation's patch (gen_54) only increased `memory_size` from 5 to 10 in an existing SHADE/DE variant. This is REJECTED. The task agent has repeatedly stayed within the DE/SHADE/JADE family for 50+ generations, causing scores to plateau.
++
++**You MUST implement EITHER CMA-ES OR GLPSO from scratch as the core search algorithm.** Any submission that still uses DE/binomial-crossover/current-to-pbest mutation as the primary operator will be considered a FAILURE, even if it adds OBL, LPSR, archives, or other add-ons.
++
++### MANDATORY: IMPLEMENT CMA-ES OR GLPSO
++#### CMA-ES requirements (at least 100 NEW lines):
++- Mean vector `m`, step-size `sigma`, covariance `C` (identity init)
++- Evolution paths `p_sigma`, `p_c` with learning rates `c_sigma`, `c_c`
++- Rank-one + rank-mu covariance update (`c_1`, `c_mu`)
++- Sample population from `m + sigma * N(0, C)` via eigendecomposition `B, D` (or Cholesky)
++- Weighted recombination of top `mu` solutions
++- Step-size adaptation from cumulative path length
++
++#### GLPSO requirements (at least 100 NEW lines):
++- Comprehensive learning: each particle velocity update uses an exemplar's personal best
++- Refreshing gap mechanism (`refresh_gap`) to reassign exemplars on stagnation
++- Inertia `w`, cognitive `c1`, social `c2`, velocity clamping, boundary handling
++
++The `DEOptimizer` class name, `__init__` signature, `optimize()` signature, and stats keys MUST stay identical (or use `DEOptimizer = CMAESOptimizer` alias).
++
++### ABSOLUTELY FORBIDDEN (AUTOMATIC REJECTION)
++- Tweaking F, CR, w, c1, c2, pop_size, memory_size, pbest_p, restart thresholds
++- Keeping DE/SHADE/JADE mutation-crossover-selection as the main loop
++- Adding OBL/LPSR/archive/restart on top of the existing DE loop without replacing it
++- Submitting a patch that only edits `memory_size = 10` or similar one-line constant changes
+ """
+     return ""
+ 

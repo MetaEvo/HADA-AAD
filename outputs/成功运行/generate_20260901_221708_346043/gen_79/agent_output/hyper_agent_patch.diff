@@ -1,0 +1,244 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 9340780..39f4dd6 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -139,7 +139,7 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ ## ANALYSIS GUIDANCE (what to look at before making changes):
+ 
+-1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes.
++1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes. In that case, you MUST update task_agent.py to include copy-paste-ready L-SHADE code blocks (LPSR, stagnation restart, weighted Lehmer mean) AND a mandatory verification checklist that forces structural changes to `/hada/metabbo/ec_algorithm.py`. Do not merely restate general advice - paste real code.
+ 
+ 2. **ALWAYS check if the Task Agent actually used the editor tool** by looking at chat_history_task_agent.md. If the Task Agent only described changes without applying them, your prompt must be more explicit about using the editor tool.
+ 
+diff --git a/task_agent.py b/task_agent.py
+index 88e7e8f..022cda1 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -54,16 +54,24 @@ The gen_11 L-SHADE included these critical components:
+ 8. **Controller optionally supplies pbest_p** - but the algorithm also adapts it internally
+ 
+ ## CURRENT STATE OF ec_algorithm.py (WHAT TO IMPROVE ON):
+-The current file already has a **partial JADE implementation** with archive and current-to-pbest/1, but it is **MISSING several key L-SHADE components** that the gen_11 winner used:
+-- ❌ **NO Linear Population Size Reduction (LPSR)** - the population stays at fixed size the whole run. This was important in gen_11.
+-- ❌ **NO stagnation restart** - when the population converges, there is no mechanism to reinitialize worst individuals near the best. This was in gen_11.
+-- ✅ HAS external archive (JADE-style)
+-- ✅ HAS current-to-pbest/1 mutation
+-- ✅ HAS simple F/CR memory updates
+-- ❌ Memory update uses simple weighted mean, NOT the **weighted Lehmer mean** (which gen_11 used for F)
+-- ✅ Controller observation includes pop_size hint
++The current `/hada/metabbo/ec_algorithm.py` is a **plain DE/rand/1/bin** implementation:
++- ✅ Uses classic DE mutation `a + F*(b-c)` with binomial crossover
++- ✅ Uses tournament selection to pick a,b,c (not current-to-pbest)
++- ❌ **NO SHADE/JADE success-history memory** for F and CR
++- ❌ **NO current-to-pbest/1 mutation** (the gen_11 winner used this)
++- ❌ **NO external archive** of replaced parents
++- ❌ **NO Linear Population Size Reduction (LPSR)** - population stays fixed; gen_11 used LPSR
++- ❌ **NO stagnation-triggered restart** - gen_11 reinitialized worst 15% near best
++- ❌ **NO weighted Lehmer mean** for F/CR updates (gen_11 used delta-fitness weighted Lehmer mean)
+ 
+-**YOUR JOB: Upgrade the current JADE implementation to L-SHADE by adding the missing components from gen_11's winning implementation.**
++**YOUR #1 JOB: Replace the plain DE/rand/1/bin with a full L-SHADE (or SHADE/JADE) implementation by ACTUALLY MODIFYING `/hada/metabbo/ec_algorithm.py`. The gen_11 L-SHADE scored 0.93121, which is the current best. Implement these components in the optimize() method:**
++1. **SHADE memory**: `memory_size=10`, `memory_F`, `memory_CR`, `memory_idx` for adaptive F/CR
++2. **Current-to-pbest/1 mutation**: `v = x_i + F*(x_pbest - x_i) + F*(x_r1 - x_r2)` with pbest pool and optional archive
++3. **External archive**: store replaced parents, randomly use archive members as `r2` with probability
++4. **Linear Population Size Reduction (LPSR)**: reduce population linearly from `pop_size` to `max(4, int(0.15*pop_size))` as evals progress
++5. **Stagnation-triggered restart**: if no improvement for 5 iterations, reinitialize worst 15% near gbest with small sigma
++6. **Weighted Lehmer mean** for F memory update, weighted mean for CR, using delta-fitness weights
++7. **Track delta_f** for every successful trial
+ 
+ ## FILES YOU ARE ALLOWED TO MODIFY:
+ 1. `/hada/metabbo/ec_algorithm.py` - The main evolutionary algorithm (MOST IMPORTANT)
+@@ -102,8 +110,103 @@ So your modified `ec_algorithm.py` MUST still provide:
+ 
+ ## SPECIFIC IMPROVEMENTS TO IMPLEMENT IN ec_algorithm.py (in priority order):
+ 
+-### 1. ADD LINEAR POPULATION SIZE REDUCTION (LPSR) - HIGHEST IMPACT MISSING PIECE
+-After updating SHADE memory each generation, add:
++### THE BIG PICTURE
++The current optimize() method is a simple DE/rand/1/bin loop. **You must REPLACE the main loop body (lines ~113-180) with a complete L-SHADE implementation.** Here are the exact pieces you need to assemble, in order:
++
++### 0. INITIALIZE SHADE MEMORY AND ARCHIVE (at the start of optimize, after pop initialization)
++```python
++# SHADE success-history memory
++memory_size = 10
++memory_F = np.full(memory_size, 0.5)
++memory_CR = np.full(memory_size, 0.5)
++memory_idx = 0
++# External archive of replaced parents
++archive = np.empty((0, self.dim))
++archive_fitness = np.empty(0)
++archive_capacity = pop_size
++# L-SHADE state
++current_n = pop_size
++stagnation_count = 0
++best_progress = initial_gbest_f
++```
++
++### 1. GENERATE F AND CR FOR EACH INDIVIDUAL (at the start of each generation)
++```python
++# Sample per-individual F from Cauchy and CR from normal using SHADE memory
++rand_mem_idx = rng.randint(0, memory_size, size=current_n)
++F_vals = np.array([np.clip(memory_F[idx] + 0.1 * np.tan(np.pi * (rng.random() - 0.5)), 0.0, 1.0) for idx in rand_mem_idx])
++CR_vals = np.array([np.clip(memory_CR[idx] + 0.1 * rng.standard_normal(), 0.0, 1.0) for idx in rand_mem_idx])
++```
++
++### 2. CURRENT-TO-PBEST/1 MUTATION WITH ARCHIVE
++For each i, choose pbest from the top `pbest_p = 0.2 * current_n` individuals, then choose r1 from population, r2 from population∪archive:
++```python
++pbest_p = max(1, int(0.2 * current_n))
++for i in range(current_n):
++    # pbest pool
++    pbest_idx = rng.randint(0, pbest_p)
++    x_pbest = pop_ordered_by_fitness[pbest_idx]
++    # r1 from population (not i)
++    r1 = rng.choice([j for j in range(current_n) if j != i])
++    # r2 from population or archive (50% archive)
++    if rng.random() < 0.5 and len(archive) > 0:
++        r2 = archive[rng.randint(0, len(archive))]
++    else:
++        r2 = pop[rng.choice([j for j in range(current_n) if j != i and j != r1])]
++    # current-to-pbest/1
++    mutant = pop[i] + F_vals[i] * (x_pbest - pop[i]) + F_vals[i] * (pop[r1] - r2)
++    # binomial crossover with CR_vals[i]
++    j_rand = rng.randint(0, self.dim)
++    trial = np.where((rng.random(self.dim) < CR_vals[i]) | (np.arange(self.dim) == j_rand), mutant, pop[i])
++    trial = np.clip(trial, lb, ub)
++    new_pop[i] = trial
++```
++
++### 3. GREEDY SELECTION WITH ARCHIVE UPDATE AND delta_f TRACKING
++When `trial_f < fitness[i]`, push the replaced parent into the archive (truncate to archive_capacity), and store `S_F`, `S_CR`, `S_delta`:
++```python
++if trial_f < fitness[i]:
++    S_F.append(F_vals[i])
++    S_CR.append(CR_vals[i])
++    S_delta.append(fitness[i] - trial_f)
++    # add old individual to archive
++    archive = np.vstack([archive, pop[i].reshape(1, -1)])
++    archive_fitness = np.append(archive_fitness, fitness[i])
++    if len(archive) > archive_capacity:
++        keep = rng.choice(len(archive), size=archive_capacity, replace=False)
++        archive = archive[keep]
++        archive_fitness = archive_fitness[keep]
++    pop[i] = trial
++    fitness[i] = trial_f
++    if trial_f < gbest_f:
++        gbest_f = trial_f
++        gbest = trial.copy()
++```
++
++### 4. UPDATE SHADE MEMORY WITH WEIGHTED LEHMER MEAN (after each generation)
++```python
++if len(S_F) > 0:
++    S_F_arr = np.array(S_F, dtype=float)
++    S_CR_arr = np.array(S_CR, dtype=float)
++    S_delta_arr = np.array(S_delta, dtype=float)
++    total_delta = float(np.sum(S_delta_arr))
++    if total_delta > 1e-30:
++        weights = S_delta_arr / total_delta
++    else:
++        weights = np.ones_like(S_delta_arr) / len(S_delta_arr)
++    if np.sum(weights * S_F_arr) > 1e-30:
++        mean_F = float(np.sum(weights * S_F_arr**2) / np.sum(weights * S_F_arr))
++    else:
++        mean_F = float(np.mean(S_F_arr))
++    mean_CR = float(np.sum(weights * S_CR_arr))
++    memory_F[memory_idx] = max(0.1, min(1.0, mean_F))
++    memory_CR[memory_idx] = max(0.0, min(1.0, mean_CR))
++    memory_idx = (memory_idx + 1) % memory_size
++    S_F = []; S_CR = []; S_delta = []
++```
++
++### 5. ADD LINEAR POPULATION SIZE REDUCTION (LPSR) - HIGHEST IMPACT
++After updating SHADE memory each generation:
+ ```python
+ # Linear population size reduction (L-SHADE)
+ progress_frac = min(1.0, evals / max(1.0, self.max_evals))
+@@ -126,9 +229,14 @@ if current_n > min_pop:
+         current_n = target_n
+ ```
+ 
+-### 2. ADD STAGNATION-TRIGGERED RESTART (was in gen_11)
++### 6. ADD STAGNATION-TRIGGERED RESTART
+ Track `stagnation_count`. If no improvement for 5 iterations, restart worst 15%:
+ ```python
++if gbest_f < best_progress - 1e-12:
++    best_progress = gbest_f
++    stagnation_count = 0
++else:
++    stagnation_count += 1
+ if stagnation_count >= 5:
+     n_restart = max(1, int(current_n * 0.15))
+     worst_idx = np.argsort(fitness[:current_n])[-n_restart:]
+@@ -142,33 +250,8 @@ if stagnation_count >= 5:
+     stagnation_count = 0
+ ```
+ 
+-### 3. IMPROVE SHADE MEMORY UPDATE TO WEIGHTED LEHMER MEAN
+-Instead of simple means, use delta-fitness weighted Lehmer mean for F:
+-```python
+-if len(S_F) > 0:
+-    S_F_arr = np.array(S_F, dtype=float)
+-    S_CR_arr = np.array(S_CR, dtype=float)
+-    S_delta_arr = np.array(S_delta, dtype=float)
+-    total_delta = float(np.sum(S_delta_arr))
+-    if total_delta > 1e-30:
+-        weights = S_delta_arr / total_delta
+-    else:
+-        weights = np.ones_like(S_delta_arr) / len(S_delta_arr)
+-    if np.sum(weights * S_F_arr) > 1e-30:
+-        mean_F = float(np.sum(weights * S_F_arr**2) / np.sum(weights * S_F_arr))
+-    else:
+-        mean_F = float(np.mean(S_F_arr))
+-    mean_CR = float(np.sum(weights * S_CR_arr))
+-    memory_F[memory_idx] = max(0.1, min(1.0, mean_F))
+-    memory_CR[memory_idx] = max(0.0, min(1.0, mean_CR))
+-    memory_idx = (memory_idx + 1) % memory_size
+-```
+-
+-### 4. TRACK delta_f FOR EVERY SUCCESSFUL TRIAL
+-When a trial is accepted and replaces the parent, store `delta_f = fitness[i] - trial_f` alongside `F_vals[i]` and `CR_vals[i]` in `S_delta`, `S_F`, `S_CR`.
+-
+-### 5. MAINTAIN current_n VARIABLE
+-Use `current_n` throughout the loop (initialized to `pop_size`) instead of hardcoding `pop_size` everywhere, so LPSR can shrink it.
++### 7. MAINTAIN current_n VARIABLE
++Use `current_n` throughout the loop (initialized to `pop_size`) instead of hardcoding `pop_size` everywhere, so LPSR can shrink it. Also use `pop_ordered_by_fitness = pop[np.argsort(fitness[:current_n])]` for pbest selection.
+ 
+ ## EXPLICITLY REJECTED (DO NOT DO THESE):
+ - ❌ Changing F, CR, w, c1, c2, pop_size numeric values
+@@ -187,12 +270,24 @@ Use `current_n` throughout the loop (initialized to `pop_size`) instead of hardc
+ 5. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
+ 6. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
+ 
++## CODE VERIFICATION CHECKLIST - BEFORE FINISHING (MANDATORY):
++- [ ] You have ACTUALLY modified `/hada/metabbo/ec_algorithm.py` using the editor tool (str_replace)
++- [ ] Your new code uses `current_n` not `pop_size` in the main loop
++- [ ] You have defined `memory_size`, `memory_F`, `memory_CR`, `memory_idx`, `archive`, `archive_capacity`, `S_F`, `S_CR`, `S_delta` in `optimize()`
++- [ ] The main loop uses `current-to-pbest/1` mutation, not `rand/1`
++- [ ] LPSR block is present after SHADE memory update
++- [ ] Stagnation restart block is present
++- [ ] `evaluate_problem(problem, ...)` is called correctly (not `self._eval_task()`)
++- [ ] `DEOptimizer` class and `optimize` method signature are unchanged
++- [ ] `stats` dict still has `'gbest_f'` and `'initial_gbest_f'`
++- [ ] Syntax check: `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"` passes
++
+ ## REMEMBER:
+ - The evaluation code CANNOT be modified. It expects `DEOptimizer` class with the interface above.
+ - If you introduce a new helper method or class, define it BEFORE using it.
+ - Do NOT call methods that don't exist.
+ - Your changes must be syntactically valid Python.
+-- **The gen_11 L-SHADE achieved 0.93121. Your goal is to add back the missing L-SHADE components (LPSR, restart, weighted Lehmer mean) to the current JADE implementation to recover and exceed that score.**
++- **The gen_11 L-SHADE achieved 0.93121. Your goal is to IMPLEMENT a full L-SHADE (or SHADE/JADE) with LPSR, stagnation restart, and weighted Lehmer mean in `/hada/metabbo/ec_algorithm.py` to recover and exceed that score.**
+ 
+ Now here is the specific task input:
+ """
+@@ -208,7 +303,7 @@ Respond in JSON format with the following schema:
+     "response": ...
+ }}
+ </json>"""
+-        new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all')
++        new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all', require_tool='str_replace')
+ 
+         # Extract the response
+         prediction = "None"

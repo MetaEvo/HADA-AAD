@@ -1,0 +1,114 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5fd2466..9a4aea3 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -122,12 +122,12 @@ class DEOptimizer:
+         done = False
+         
+         # SHADE (Success-History Adaptive Differential Evolution) state
+-        memory_size = 5
++        memory_size = 10
+         memory_F = np.full(memory_size, 0.5)
+         memory_CR = np.full(memory_size, 0.5)
+         memory_idx = 0
+         archive = np.empty((0, self.dim))
+-        archive_capacity = max(pop_size, 20)
++        archive_capacity = max(2 * pop_size, 20)
+         stagnation_count = 0
+         
+         while not done:
+@@ -147,7 +147,20 @@ class DEOptimizer:
+             progress = min(1.0, evals / max(1.0, self.max_evals))
+             # More exploitation as the budget is consumed
+             pbest_p = max(0.05, 0.2 * (1.0 - progress))
+-            
++            # Allow an external controller to override the pbest pool size.
++            if 'pbest_p' in params:
++                pbest_p = float(params['pbest_p'])
++                pbest_p = max(0.02, min(0.5, pbest_p))
++
++            # L-SHADE linear population size reduction: focus evaluations on better individuals
++            min_pop_size = max(4, int(0.2 * self.pop_size))
++            target_pop_size = max(min_pop_size, int(round(self.pop_size + (min_pop_size - self.pop_size) * (evals / max(1.0, self.max_evals)))))
++            if target_pop_size < pop_size:
++                keep_idx = np.argsort(fitness)[:target_pop_size]
++                pop = pop[keep_idx].copy()
++                fitness = fitness[keep_idx].copy()
++                pop_size = target_pop_size
++
+             prev_gbest_f = gbest_f
+             pop_old = pop.copy()
+             new_pop = np.copy(pop)
+@@ -207,7 +220,10 @@ class DEOptimizer:
+                 mask = rng.random(self.dim) < CR_i
+                 mask[j_rand] = True
+                 trial = np.where(mask, mutant, pop[i])
+-                trial = np.clip(trial, lb, ub)
++                # Bounce-back repair for out-of-bounds coordinates instead of clipping
++                out_of_bounds = (trial < lb) | (trial > ub)
++                if np.any(out_of_bounds):
++                    trial = np.where(out_of_bounds, lb + rng.random(self.dim) * (ub - lb), trial)
+                 new_pop[i] = trial
+             
+             # Evaluate trial vectors and apply greedy selection
+@@ -236,9 +252,16 @@ class DEOptimizer:
+                         gbest = new_pop[i].copy()
+             
+             # Update SHADE memory with successful parameters
++            # Use Lehmer mean for F (canonical SHADE) and arithmetic mean for CR.
+             if len(S_F) > 0:
+-                memory_F[memory_idx] = float(np.mean(S_F))
+-                memory_CR[memory_idx] = float(np.mean(S_CR))
++                S_F_arr = np.asarray(S_F, dtype=float)
++                S_CR_arr = np.asarray(S_CR, dtype=float)
++                sum_F = float(np.sum(S_F_arr))
++                if sum_F > 1e-12:
++                    memory_F[memory_idx] = float(np.sum(S_F_arr * S_F_arr) / sum_F)
++                else:
++                    memory_F[memory_idx] = float(np.mean(S_F_arr))
++                memory_CR[memory_idx] = float(np.mean(S_CR_arr))
+                 memory_idx = (memory_idx + 1) % memory_size
+             
+             # Stagnation detection: restart worst individuals if no improvement for several iterations
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 01ba422..b1fa65b 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -102,8 +102,10 @@ class AdaptiveDEController(ParamController):
+ 
+     def step(self, observation: Dict[str, Any]) -> Dict[str, float]:
+         self.it = observation.get('iteration', self.it + 1)
+-        max_iter = max(1, int(observation.get('max_evals', 10000) / 100))
+-        t = min(1.0, float(self.it) / max_iter)
++        evals = float(observation.get('evals', 0))
++        max_evals = float(observation.get('max_evals', max(1.0, evals)))
++        # Use true evaluation budget progress rather than guessed iteration count.
++        t = min(1.0, evals / max(1.0, max_evals))
+ 
+         # Smooth progress-based decay from exploration to exploitation
+         F = self.f_start * (1 - t) + self.f_end * t
+@@ -143,5 +145,8 @@ class AdaptiveDEController(ParamController):
+         if current_gbest_cv is not None and t > 0.5 and current_gbest_cv > epsilon:
+             epsilon = max(epsilon, min(current_gbest_cv * 0.5, self.epsilon_start))
+ 
++        # Let the algorithm know how much to focus exploitation (small pbest pool).
++        pbest_p = max(0.05, 0.2 * (1.0 - t))
++
+         return {'F': float(F), 'CR': float(CR), 'strategy': strategy,
+-                'epsilon': float(epsilon)}
+\ No newline at end of file
++                'epsilon': float(epsilon), 'pbest_p': float(pbest_p)}
+\ No newline at end of file
+diff --git a/task_agent.py b/task_agent.py
+index a7bbaa2..8c7c87f 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -40,7 +40,7 @@ You are an expert optimization algorithm researcher. You MUST modify the evoluti
+ ### MANDATORY: TRY DIFFERENT ALGORITHMS
+ Do NOT just tweak parameters of the current DE. If the score has plateaued, you MUST replace the core algorithm with a fundamentally different one. For bbob_unconstrained, consider implementing:
+ - CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
+-- SHADE (Success-History based Adaptive DE)
++- CMA-ES (REQUIRED)
+ - JADE (Adaptive DE with optional external archive)
+ - GLPSO (Comprehensive Learning PSO)
+ - ES (Evolution Strategy with covariance adaptation)

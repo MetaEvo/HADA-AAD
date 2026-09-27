@@ -1,0 +1,30 @@
+diff --git a/task_agent.py b/task_agent.py
+index 88e7e8f..7d5d74a 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -37,21 +37,13 @@ You MUST use the `editor` tool with command='str_replace' to modify actual sourc
+ ## THE MOST IMPORTANT FILE: /hada/metabbo/ec_algorithm.py
+ This file contains the core evolutionary algorithm. During evaluation, `/hada/domains/{domain}/dqn_de_util.py` dynamically loads this file via `importlib.util.spec_from_file_location('ec_mod', .../ec_algorithm.py)` and instantiates the `DEOptimizer` class. **If you don't modify this file, your changes will not affect the evaluation score.**
+ 
+-## 🔥 PROVEN BEST RESULT - READ THIS FIRST (CRITICAL):
+-The **BEST-KNOWN SCORE is 0.93121** achieved by **generation 11's L-SHADE implementation**. The winning diff is at:
+-`/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff`
++## 🔥 LATEST WINNING RESULT - READ THIS FIRST (CRITICAL):
++The **BEST-KNOWN SCORE is now 0.97126** achieved by **generation 63's CMA-ES + coordinate-descent local search**. The winning diff is at:
++`/hada/outputs/generate_20260901_221708_346043/gen_63/bbob_unconstrained_eval/agent_evals/all_patch.diff`
+ 
+ **READ THAT DIFF IMMEDIATELY - it shows exactly what structural changes produced the best score.**
+ 
+-The gen_11 L-SHADE included these critical components:
+-1. **SHADE success-history memory** (`memory_size=10`, `memory_F`, `memory_CR`, `memory_idx`) - stores and adapts F/CR per generation
+-2. **Current-to-pbest/1 mutation** - uses pbest pool, samples F from Cauchy, CR from normal
+-3. **External archive** - stores replaced parents, mixed into mutation
+-4. **Linear Population Size Reduction (LPSR)** - shrinks `current_n` linearly from `pop_size` to `min_pop_size` as evaluations progress
+-5. **Stagnation-triggered restart** - if no improvement for 5 iterations, reinitializes worst 15% near best with small sigma
+-6. **Weighted Lehmer mean for F update** - uses delta-fitness weights (not simple mean)
+-7. **Weighted mean for CR update** - uses delta-fitness weights
+-8. **Controller optionally supplies pbest_p** - but the algorithm also adapts it internally
++The gen_63 winner added a full `CMAESOptimizer` class with the same `DEOptimizer` interface, then aliased `DEOptimizer = CMAESOptimizer` at the bottom. It also reserved ~30% of the budget for a final coordinate-descent local search.
+ 
+ ## CURRENT STATE OF ec_algorithm.py (WHAT TO IMPROVE ON):
+ The current file already has a **partial JADE implementation** with archive and current-to-pbest/1, but it is **MISSING several key L-SHADE components** that the gen_11 winner used:

@@ -1,0 +1,326 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 9340780..27a8963 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -150,10 +150,16 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ 4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
+ 
+-## 🔥 CRITICAL: REFERENCE THE BEST-KNOWN WINNING IMPLEMENTATION
+-For bbob_unconstrained, the **gen_11 L-SHADE achieved best score 0.93121**. Include this winning diff path in task_agent.py prompt:
++## 🔥 CRITICAL: REFERENCE THE BEST-KNOWN WINNING IMPLEMENTATIONS
++For bbob_unconstrained, the **current best score is 0.97126 from generation 63** which used **CMA-ES + coordinate-descent local search**. Winning diff path:
++`/hada/outputs/generate_20260829_133719_608505/gen_63/bbob_unconstrained_eval/agent_evals/all_patch.diff`
++
++The **previous best 0.93121 was gen_11 L-SHADE**. Winning diff path:
+ `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff`
+-Also include copy-paste-ready code blocks for missing L-SHADE components (LPSR, stagnation restart, weighted Lehmer mean) so the Task Agent can add them.
++
++Instruct the Task Agent to read BOTH diffs and implement the gen_63 CMA-ES + coordinate-descent approach (preferred) or complete the gen_11 L-SHADE (LPSR, stagnation restart, weighted Lehmer mean). Include copy-paste-ready code blocks for both so the Task Agent can implement them directly.
++
++Additionally, the Task Agent prompt MUST explicitly say: DO NOT just tweak existing SHADE/JADE constants (F, CR, pbest_p, memory_size, etc.) — that has been tried for 50+ generations without improvement. Try a completely different algorithm or add major structural mechanisms instead.
+ 
+ Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+ 
+diff --git a/task_agent.py b/task_agent.py
+index 88e7e8f..74af754 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -37,33 +37,33 @@ You MUST use the `editor` tool with command='str_replace' to modify actual sourc
+ ## THE MOST IMPORTANT FILE: /hada/metabbo/ec_algorithm.py
+ This file contains the core evolutionary algorithm. During evaluation, `/hada/domains/{domain}/dqn_de_util.py` dynamically loads this file via `importlib.util.spec_from_file_location('ec_mod', .../ec_algorithm.py)` and instantiates the `DEOptimizer` class. **If you don't modify this file, your changes will not affect the evaluation score.**
+ 
+-## 🔥 PROVEN BEST RESULT - READ THIS FIRST (CRITICAL):
+-The **BEST-KNOWN SCORE is 0.93121** achieved by **generation 11's L-SHADE implementation**. The winning diff is at:
++## 🔥 PROVEN BEST RESULTS - READ THESE FIRST (CRITICAL):
++
++### BEST SCORE: 0.97126 (generation 63) — CMA-ES + coordinate-descent local search
++Winning diff:
++`/hada/outputs/generate_20260829_133719_608505/gen_63/bbob_unconstrained_eval/agent_evals/all_patch.diff`
++
++That patch **replaced DEOptimizer with a CMA-ES optimizer** (via `DEOptimizer = CMAESOptimizer` at the bottom) and **added a final coordinate-descent local search** around the best solution using ~30% of the evaluation budget. This is the current best-known implementation.
++
++### PREVIOUS BEST: 0.93121 (generation 11) — L-SHADE
++Winning diff:
+ `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff`
+ 
+-**READ THAT DIFF IMMEDIATELY - it shows exactly what structural changes produced the best score.**
++That L-SHADE implementation included:
++1. SHADE success-history memory (memory_size=10)
++2. Current-to-pbest/1 mutation
++3. External archive
++4. **Linear Population Size Reduction (LPSR)**
++5. **Stagnation-triggered restart** (reinitialize worst 15% near best)
++6. **Weighted Lehmer mean for F update**
++7. **Weighted mean for CR update**
+ 
+-The gen_11 L-SHADE included these critical components:
+-1. **SHADE success-history memory** (`memory_size=10`, `memory_F`, `memory_CR`, `memory_idx`) - stores and adapts F/CR per generation
+-2. **Current-to-pbest/1 mutation** - uses pbest pool, samples F from Cauchy, CR from normal
+-3. **External archive** - stores replaced parents, mixed into mutation
+-4. **Linear Population Size Reduction (LPSR)** - shrinks `current_n` linearly from `pop_size` to `min_pop_size` as evaluations progress
+-5. **Stagnation-triggered restart** - if no improvement for 5 iterations, reinitializes worst 15% near best with small sigma
+-6. **Weighted Lehmer mean for F update** - uses delta-fitness weights (not simple mean)
+-7. **Weighted mean for CR update** - uses delta-fitness weights
+-8. **Controller optionally supplies pbest_p** - but the algorithm also adapts it internally
++**READ BOTH DIFFS IMMEDIATELY - they show exactly what structural changes produced the best scores.**
+ 
+ ## CURRENT STATE OF ec_algorithm.py (WHAT TO IMPROVE ON):
+-The current file already has a **partial JADE implementation** with archive and current-to-pbest/1, but it is **MISSING several key L-SHADE components** that the gen_11 winner used:
+-- ❌ **NO Linear Population Size Reduction (LPSR)** - the population stays at fixed size the whole run. This was important in gen_11.
+-- ❌ **NO stagnation restart** - when the population converges, there is no mechanism to reinitialize worst individuals near the best. This was in gen_11.
+-- ✅ HAS external archive (JADE-style)
+-- ✅ HAS current-to-pbest/1 mutation
+-- ✅ HAS simple F/CR memory updates
+-- ❌ Memory update uses simple weighted mean, NOT the **weighted Lehmer mean** (which gen_11 used for F)
+-- ✅ Controller observation includes pop_size hint
++The current file `/hada/metabbo/ec_algorithm.py` has a **SHADE/JADE implementation** (current-to-pbest/1, external archive, success-history memory). It does NOT have the **CMA-ES implementation that achieved 0.97126 in gen_63**. The gen_63 winning patch shows exactly how to add it.
+ 
+-**YOUR JOB: Upgrade the current JADE implementation to L-SHADE by adding the missing components from gen_11's winning implementation.**
++**YOUR JOB: Implement the best-known algorithm from gen_63 (CMA-ES + coordinate-descent local search) in `/hada/metabbo/ec_algorithm.py`, or if you prefer, add the missing L-SHADE components from gen_11 to the current SHADE. The gen_63 CMA-ES approach is the current state of the art and is strongly preferred.**
+ 
+ ## FILES YOU ARE ALLOWED TO MODIFY:
+ 1. `/hada/metabbo/ec_algorithm.py` - The main evolutionary algorithm (MOST IMPORTANT)
+@@ -94,105 +94,168 @@ initial_gbest_f = stats.get('initial_gbest_f', gbest_f)
+ ```
+ 
+ So your modified `ec_algorithm.py` MUST still provide:
+-- A class named `DEOptimizer` (you can also add other classes)
++- A class named `DEOptimizer` (you can also add other classes, e.g. `CMAESOptimizer`)
+ - Constructor: `__init__(self, dim, lower_bounds, upper_bounds, max_evals, params=None, controller=None, recorder=None, swarm_size=None)`
+ - Method: `optimize(self, problem, x0=None, train=True, seed=None) -> (gbest_list, stats_dict)`
+ - The returned `stats_dict` MUST contain keys `'gbest_f'` and `'initial_gbest_f'`
+ - Each function evaluation MUST increment `evals` and stop when `evals >= self.max_evals`
+ 
+-## SPECIFIC IMPROVEMENTS TO IMPLEMENT IN ec_algorithm.py (in priority order):
++## 🏆 OPTION A (PREFERRED): IMPLEMENT CMA-ES + COORDINATE-DESCENT LOCAL SEARCH (gen_63, score 0.97126)
++READ the full winning diff first:
++`/hada/outputs/generate_20260829_133719_608505/gen_63/bbob_unconstrained_eval/agent_evals/all_patch.diff`
+ 
+-### 1. ADD LINEAR POPULATION SIZE REDUCTION (LPSR) - HIGHEST IMPACT MISSING PIECE
+-After updating SHADE memory each generation, add:
+-```python
+-# Linear population size reduction (L-SHADE)
+-progress_frac = min(1.0, evals / max(1.0, self.max_evals))
+-min_pop = max(4, int(0.15 * pop_size))
+-if current_n > min_pop:
+-    target_n = max(min_pop, int(round(pop_size + (min_pop - pop_size) * progress_frac)))
+-    if target_n < current_n:
+-        remove_count = current_n - target_n
+-        worst_indices = np.argsort(fitness[:current_n])[::-1][:remove_count]
+-        keep_indices = np.setdiff1d(np.arange(current_n), worst_indices)
+-        n_keep = len(keep_indices)
+-        if n_keep > 0:
+-            pop[:n_keep] = pop[keep_indices]
+-            fitness[:n_keep] = fitness[keep_indices]
+-        if n_keep < target_n:
+-            local_best_idx = int(np.argmin(fitness[:max(1, n_keep)]))
+-            for j in range(n_keep, target_n):
+-                pop[j] = pop[local_best_idx].copy()
+-                fitness[j] = fitness[local_best_idx]
+-        current_n = target_n
+-```
++The winning gen_63 patch does THREE things:
++1. **Adds a `CMAESOptimizer` class** with a standard CMA-ES loop (sample multivariate normal, select top half with log-weights, update mean/covariance/step-size via evolution paths).
++2. **Adds a final coordinate-descent local search** around the best solution using the last ~30% of the evaluation budget (reserve `local_reserve = max(pop_size, int(0.3 * self.max_evals))`).
++3. **At the bottom of the file adds `DEOptimizer = CMAESOptimizer`** so the caller still instantiates `DEOptimizer` but gets the CMA-ES implementation.
+ 
+-### 2. ADD STAGNATION-TRIGGERED RESTART (was in gen_11)
+-Track `stagnation_count`. If no improvement for 5 iterations, restart worst 15%:
+-```python
+-if stagnation_count >= 5:
+-    n_restart = max(1, int(current_n * 0.15))
+-    worst_idx = np.argsort(fitness[:current_n])[-n_restart:]
+-    sigma = (ub - lb) * 0.02 * (1.0 + progress_frac)
+-    for idx in worst_idx:
+-        pop[idx] = gbest + sigma * rng.standard_normal(self.dim)
+-        pop[idx] = np.clip(pop[idx], lb, ub)
+-        fitness[idx] = evaluate_problem(problem, pop[idx])
+-        evals += 1
+-        if evals >= self.max_evals: break
+-    stagnation_count = 0
+-```
++Here is the copy-paste-ready skeleton from the winning diff (you should read the full diff and adapt it exactly):
+ 
+-### 3. IMPROVE SHADE MEMORY UPDATE TO WEIGHTED LEHMER MEAN
+-Instead of simple means, use delta-fitness weighted Lehmer mean for F:
+ ```python
+-if len(S_F) > 0:
+-    S_F_arr = np.array(S_F, dtype=float)
+-    S_CR_arr = np.array(S_CR, dtype=float)
+-    S_delta_arr = np.array(S_delta, dtype=float)
+-    total_delta = float(np.sum(S_delta_arr))
+-    if total_delta > 1e-30:
+-        weights = S_delta_arr / total_delta
+-    else:
+-        weights = np.ones_like(S_delta_arr) / len(S_delta_arr)
+-    if np.sum(weights * S_F_arr) > 1e-30:
+-        mean_F = float(np.sum(weights * S_F_arr**2) / np.sum(weights * S_F_arr))
+-    else:
+-        mean_F = float(np.mean(S_F_arr))
+-    mean_CR = float(np.sum(weights * S_CR_arr))
+-    memory_F[memory_idx] = max(0.1, min(1.0, mean_F))
+-    memory_CR[memory_idx] = max(0.0, min(1.0, mean_CR))
+-    memory_idx = (memory_idx + 1) % memory_size
++class CMAESOptimizer:
++    def __init__(self, dim, lower_bounds, upper_bounds, max_evals, params=None, controller=None, recorder=None, swarm_size=None):
++        self.dim = int(dim)
++        self.lower_bounds = np.asarray(lower_bounds, dtype=float)
++        self.upper_bounds = np.asarray(upper_bounds, dtype=float)
++        self.max_evals = int(max_evals)
++        self.params = dict(params) if params is not None else {}
++        self.controller = controller
++        self.recorder = recorder
++        self.stats = {}
++        self.pop_size = swarm_size if swarm_size is not None else max(10, 4 + int(3 * np.log(self.dim)))
++
++    def optimize(self, problem, x0=None, train=True, seed=None):
++        rng = np.random.RandomState(seed if seed is not None else _config_seed)
++        lb, ub = self.lower_bounds, self.upper_bounds
++        dim, pop_size, max_evals = self.dim, self.pop_size, self.max_evals
++        N = pop_size
++        mu = (ub + lb) / 2.0 if x0 is None else np.clip(np.asarray(x0, dtype=float), lb, ub)
++        sigma_init = 0.3 * (ub - lb)
++        sigma = float(np.mean(sigma_init))
++        C = np.eye(dim)
++        p_s = np.zeros(dim); p_c = np.zeros(dim)
++        B = np.eye(dim); D = np.ones(dim)
++        mu_eff = max(1.0, N / 4.0)
++        cc = 4.0 / (dim + 4.0)
++        cs = (mu_eff + 2.0) / (dim + mu_eff + 5.0)
++        c1 = 2.0 / ((dim + 1.3) ** 2 + mu_eff)
++        cmu = min(1.0 - c1, 2.0 * (mu_eff - 2.0 + 1.0/mu_eff) / ((dim + 2.0) ** 2 + mu_eff))
++        damps = 1.0 + 2.0 * max(0.0, np.sqrt((mu_eff-1.0)/(dim+1.0)) - 1.0) + cs
++        evals = 0
++        gbest_f = np.inf
++        gbest = mu.copy()
++        initial_gbest_f = np.inf
++        iteration = 0
++        done = False
++        while not done and evals < max_evals:
++            iteration += 1
++            try:
++                eigvals, B = np.linalg.eigh(C)
++                D = np.sqrt(np.clip(eigvals, 1e-30, None))
++            except Exception:
++                B, D = np.eye(dim), np.ones(dim)
++            pop = np.array([mu + sigma * (B @ (D * rng.randn(dim))) for _ in range(N)])
++            pop = np.clip(pop, lb, ub)
++            fitness = np.full(N, np.inf)
++            for i in range(N):
++                if evals >= max_evals: break
++                fitness[i] = evaluate_problem(problem, pop[i])
++                evals += 1
++            valid = np.isfinite(fitness)
++            if not np.any(valid): continue
++            sort_idx = np.argsort(fitness[valid])
++            best_local_idx = np.where(valid)[0][sort_idx[0]]
++            if fitness[best_local_idx] < gbest_f:
++                gbest_f = fitness[best_local_idx]; gbest = pop[best_local_idx].copy()
++            if iteration == 1:
++                initial_gbest_f = gbest_f
++            mu_n = max(1, N // 2)
++            top_idx = np.where(valid)[0][sort_idx[:mu_n]]
++            top_x = pop[top_idx]
++            weights = np.log(mu_n + 0.5) - np.log(np.arange(1, mu_n + 1))
++            weights = weights / np.sum(weights)
++            old_mu = mu.copy()
++            mu = np.sum(weights[:, None] * top_x, axis=0)
++            y = mu - old_mu
++            p_s = (1 - cs) * p_s + np.sqrt(cs * (2 - cs) * mu_eff) * (mu - old_mu) / (sigma + 1e-30)
++            h_s = 1.0 if np.linalg.norm(p_s) / np.sqrt(1 - (1 - cs)**(2*(evals+1)/N)) < 1.4 + 2.0/(dim+1) else 0.0
++            p_c = (1 - cc) * p_c + h_s * np.sqrt(cc * (2 - cc) * mu_eff) * y / (sigma + 1e-30)
++            C = (1 - c1 - cmu) * C + c1 * (np.outer(p_c, p_c) + (1 - h_s) * cc * (2 - cc) * C)
++            for k in range(mu_n):
++                xk = (top_x[k] - old_mu) / (sigma + 1e-30)
++                C = C + cmu * weights[k] * np.outer(xk, xk)
++            sigma = sigma * np.exp((cs / damps) * (np.linalg.norm(p_s) / (np.sqrt(1 - (1-cs)**(2*(evals+1)/N)) + 1e-30) - 1.0))
++            sigma = float(np.clip(sigma, 1e-8, 10.0 * np.mean(sigma_init)))
++            if self.controller is not None:
++                obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 'initial_gbest_f': initial_gbest_f, 'max_evals': max_evals}
++                self.controller.step(obs)
++        # ---- Final coordinate-descent local search around best ----
++        step = 0.1 * (ub - lb)
++        local_reserve = max(pop_size, int(0.3 * self.max_evals))
++        main_budget = max(pop_size, self.max_evals - local_reserve)
++        local_budget = max(0, self.max_evals - main_budget)
++        local_evals = 0
++        while local_evals < local_budget and evals < self.max_evals:
++            improved_local = False
++            for j in range(self.dim):
++                if local_evals >= local_budget or evals >= self.max_evals:
++                    break
++                for direction in (1.0, -1.0):
++                    if local_evals >= local_budget or evals >= self.max_evals:
++                        break
++                    trial = gbest.copy()
++                    trial[j] = np.clip(gbest[j] + direction * step[j], lb[j], ub[j])
++                    trial_f = evaluate_problem(problem, trial)
++                    evals += 1
++                    local_evals += 1
++                    if trial_f < gbest_f:
++                        gbest_f = trial_f
++                        gbest = trial.copy()
++                        improved_local = True
++                        step[j] *= 1.2
++                        break
++            if not improved_local:
++                step *= 0.8
++                if np.max(step) < 1e-12:
++                    break
++        self.stats = {'gbest': gbest.tolist(), 'gbest_f': float(gbest_f), 'evals': int(evals), 'iterations': int(iteration), 'initial_gbest_f': float(initial_gbest_f)}
++        return gbest.tolist(), self.stats
++
++DEOptimizer = CMAESOptimizer  # <-- PUT THIS AT BOTTOM OF FILE
+ ```
+ 
+-### 4. TRACK delta_f FOR EVERY SUCCESSFUL TRIAL
+-When a trial is accepted and replaces the parent, store `delta_f = fitness[i] - trial_f` alongside `F_vals[i]` and `CR_vals[i]` in `S_delta`, `S_F`, `S_CR`.
++**IMPORTANT**: Read the actual gen_63 diff to get the exact code (including `initial_pop`/`initial_fit` stats keys if present). Make sure your version is complete and syntactically valid.
+ 
+-### 5. MAINTAIN current_n VARIABLE
+-Use `current_n` throughout the loop (initialized to `pop_size`) instead of hardcoding `pop_size` everywhere, so LPSR can shrink it.
++## OPTION B (ALTERNATIVE): ADD MISSING L-SHADE COMPONENTS TO CURRENT SHADE
++If you choose L-SHADE instead, add these from gen_11 (score 0.93121):
++1. **Linear Population Size Reduction (LPSR)** - shrink population linearly with progress.
++2. **Stagnation-triggered restart** - reinitialize worst 15% near best after 5 stale iterations.
++3. **Weighted Lehmer mean for F** and **weighted mean for CR** in memory updates, using delta-fitness weights.
++4. Track `delta_f` for every successful trial.
+ 
+ ## EXPLICITLY REJECTED (DO NOT DO THESE):
+-- ❌ Changing F, CR, w, c1, c2, pop_size numeric values
+-- ❌ Adding LHS initialization (has minimal impact)
+-- ❌ Blending controller outputs with memory values without other structural changes
+-- ❌ Making existing constants configurable via controller params (gen_17 did this and scored 0.8157, far below best 0.93121)
++- ❌ Changing F, CR, w, c1, c2, pop_size numeric values only (this has been tried for 50+ generations and doesn't improve)
++- ❌ Only adding LHS initialization (has minimal impact)
++- ❌ Making existing constants configurable via controller params (gen_17 did this and scored 0.8157)
+ - ❌ Only fixing log/exp names or small bugfixes
+ - ❌ Rewriting dqn_de_util.py or any file in /hada/domains/
+ - ❌ Breaking the `optimize()` return contract
+ 
+ ## MANDATORY WORKFLOW - FOLLOW THESE STEPS:
+-1. **READ the winning diff FIRST**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this is the PROVEN best implementation (score 0.93121)
+-2. **READ the domain code**: Use editor view on `/hada/domains/{domain}/dqn_de_util.py` to understand exactly how your code is called and scored
+-3. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py`
+-4. **MAKE your changes**: Use editor str_replace to actually modify `/hada/metabbo/ec_algorithm.py` - add the missing L-SHADE components
+-5. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
+-6. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++1. **READ the current best winning diff FIRST**: Use editor view on `/hada/outputs/generate_20260829_133719_608505/gen_63/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this is the PROVEN best implementation (score **0.97126**)
++2. **READ the previous winning diff**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff` - L-SHADE (score 0.93121)
++3. **READ the domain code**: Use editor view on `/hada/domains/{domain}/dqn_de_util.py` to understand exactly how your code is called and scored
++4. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py`
++5. **MAKE your changes**: Use editor str_replace to actually modify `/hada/metabbo/ec_algorithm.py` - implement CMA-ES + coordinate descent (Option A) or complete L-SHADE (Option B)
++6. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
++7. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
+ 
+ ## REMEMBER:
+ - The evaluation code CANNOT be modified. It expects `DEOptimizer` class with the interface above.
+ - If you introduce a new helper method or class, define it BEFORE using it.
+ - Do NOT call methods that don't exist.
+ - Your changes must be syntactically valid Python.
+-- **The gen_11 L-SHADE achieved 0.93121. Your goal is to add back the missing L-SHADE components (LPSR, restart, weighted Lehmer mean) to the current JADE implementation to recover and exceed that score.**
++- **The gen_63 CMA-ES achieved 0.97126. Your goal is to implement that winning CMA-ES + coordinate-descent approach in ec_algorithm.py (Option A), or complete the L-SHADE from gen_11 (Option B). Do NOT just tweak existing SHADE constants.**
+ 
+ Now here is the specific task input:
+ """

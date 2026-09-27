@@ -1,0 +1,159 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..6b87a29 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -114,6 +114,14 @@ class DEOptimizer:
+         iteration = 0
+         done = False
+         
++        # SHADE (Success-History Adaptive Differential Evolution) state
++        memory_size = 5
++        memory_F = np.full(memory_size, 0.5)
++        memory_CR = np.full(memory_size, 0.5)
++        memory_idx = 0
++        archive = np.empty((0, self.dim))
++        archive_capacity = max(pop_size, 20)
++        
+         while not done:
+             iteration += 1
+             params = dict(self.params)
+@@ -124,33 +132,77 @@ class DEOptimizer:
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+             
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
++            # Optional controller override (still supported, but SHADE also adapts internally)
++            ctrl_F = float(params.get('F', self.F))
++            ctrl_CR = float(params.get('CR', self.CR))
+             
+-            prev_gbest_f = gbest_f
++            progress = min(1.0, evals / max(1.0, self.max_evals))
++            # More exploitation as the budget is consumed
++            pbest_p = max(0.05, 0.2 * (1.0 - progress))
+             
+-            # Generate trial vectors
++            prev_gbest_f = gbest_f
++            pop_old = pop.copy()
+             new_pop = np.copy(pop)
++            S_F = []
++            S_CR = []
++            F_i_values = np.zeros(pop_size)
++            CR_i_values = np.zeros(pop_size)
++            
++            sorted_idx = np.argsort(fitness)
++            pbest_num = max(1, int(pop_size * pbest_p))
++            pbest_indices = sorted_idx[:pbest_num]
++            
++            # Generate trial vectors using SHADE current-to-pbest/1
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
+-                else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
++                # Sample F_i from Cauchy distribution based on history memory
++                mi = int(rng.randint(memory_size))
++                mu_F = float(memory_F[mi])
++                mu_CR = float(memory_CR[mi])
++                F_i = float(mu_F + 0.1 * rng.standard_cauchy())
++                if F_i <= 0.0:
++                    F_i = 0.1
++                elif F_i > 1.0:
++                    F_i = 1.0
++                CR_i = float(rng.normal(mu_CR, 0.1))
++                CR_i = max(0.0, min(1.0, CR_i))
++                F_i_values[i] = F_i
++                CR_i_values[i] = CR_i
++                
++                # Choose pbest from top pbest_p individuals
++                pbest_i = int(pbest_indices[int(rng.randint(len(pbest_indices)))])
++                pbest_x = pop[pbest_i]
+                 
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
++                # current-to-pbest/1 mutation
++                base = pop[i] + F_i * (pbest_x - pop[i])
+                 
+-                # Mutation and crossover
+-                j_rand = rng.randint(0, self.dim)
+-                for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
++                # r1 from population, r2 from population or archive
++                r1 = int(rng.randint(pop_size))
++                while r1 == i:
++                    r1 = int(rng.randint(pop_size))
++                candidate_r2 = [idx for idx in range(pop_size) if idx != i and idx != r1]
++                if len(archive) > 0:
++                    candidate_r2 += [pop_size + j for j in range(len(archive))]
++                if len(candidate_r2) < 1:
++                    r2 = int(rng.randint(pop_size))
++                    x2 = pop[r2]
++                else:
++                    r2 = int(candidate_r2[int(rng.randint(len(candidate_r2)))])
++                    if r2 >= pop_size:
++                        x2 = archive[r2 - pop_size]
++                    else:
++                        x2 = pop[r2]
+                 
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
++                mutant = base + F_i * (pop[r1] - x2)
++                
++                # Binomial crossover
++                j_rand = int(rng.randint(self.dim))
++                mask = rng.random(self.dim) < CR_i
++                mask[j_rand] = True
++                trial = np.where(mask, mutant, pop[i])
++                trial = np.clip(trial, lb, ub)
++                new_pop[i] = trial
+             
+-            # Evaluate trial vectors
++            # Evaluate trial vectors and apply greedy selection
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+@@ -158,14 +210,29 @@ class DEOptimizer:
+                 trial_f = evaluate_problem(problem, new_pop[i])
+                 evals += 1
+                 
+-                # Greedy selection
+                 if trial_f < fitness[i]:
++                    # Add previous position to archive before replacement
++                    old_x = pop_old[i].reshape(1, -1)
++                    if len(archive) < archive_capacity:
++                        archive = np.vstack([archive, old_x])
++                    else:
++                        replace_idx = int(rng.randint(archive_capacity))
++                        archive[replace_idx] = old_x
++                    
+                     pop[i] = new_pop[i].copy()
+                     fitness[i] = trial_f
++                    S_F.append(F_i_values[i])
++                    S_CR.append(CR_i_values[i])
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+             
++            # Update SHADE memory with successful parameters
++            if len(S_F) > 0:
++                memory_F[memory_idx] = float(np.mean(S_F))
++                memory_CR[memory_idx] = float(np.mean(S_CR))
++                memory_idx = (memory_idx + 1) % memory_size
++            
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..dbe1b92 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -6,6 +6,7 @@ the hook that a DQN-based controller should implement.
+ """
+ from abc import ABC, abstractmethod
+ from typing import Dict, Any
++import numpy as np
+ 
+ # Import global configuration
+ import sys

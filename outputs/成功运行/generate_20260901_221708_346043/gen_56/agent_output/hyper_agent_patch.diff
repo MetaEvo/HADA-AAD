@@ -1,0 +1,13 @@
+diff --git a/task_agent.py b/task_agent.py
+index 2f87696..dff6d8e 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -39,7 +39,7 @@ Parameter tweaks (F, CR, w, c1, c2, pop_size, LHS init, restart thresholds, boun
+ - ❌ Blending controller outputs with memory values
+ - ❌ Fixing log/exp names
+ - ❌ Adding boundary handling tweaks
+-- ❌ Increasing SHADE memory size or tweaking pbest_p
++- ❌ Increasing SHADE memory size (e.g., changing memory_size from 5 to 10) or tweaking pbest_p
+ - ❌ Rewriting dqn_de_util.py or any file in /hada/domains/
+ - ❌ Breaking the `optimize()` return contract
+ 

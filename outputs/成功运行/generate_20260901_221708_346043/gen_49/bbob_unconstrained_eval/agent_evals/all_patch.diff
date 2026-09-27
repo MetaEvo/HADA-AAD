@@ -1,0 +1,364 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..ef54fc5 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -113,43 +113,127 @@ class DEOptimizer:
+         # Main loop
+         iteration = 0
+         done = False
+-        
++
++        # JADE-style archive of inferior solutions
++        archive = []
++        max_archive_size = max(pop_size, 20)
++
++        # JADE/SHADE parameter memories
++        mu_F = 0.6
++        mu_CR = 0.8
++        c = 0.1
++        pbest_ratio = 0.1
++
++        # Stagnation-triggered restart
++        no_improve_streak = 0
++        restart_threshold = max(5, int(pop_size * 0.15))
++
+         while not done:
+             iteration += 1
+             params = dict(self.params)
++
++            # Population diversity: normalized mean coordinate std across individuals
++            if pop_size > 1:
++                pop_div = float(np.mean(np.std(pop, axis=0)) / max(1e-12, float(np.mean(ub - lb))))
++            else:
++                pop_div = 0.0
++
+             if self.controller is not None:
+-                obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 
+-                       'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
++                obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f,
++                       'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals,
++                       'stagnation': no_improve_streak, 'diversity': pop_div}
+                 step_params = self.controller.step(obs)
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+-            
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
+-            
++
++            base_F = float(params.get('F', mu_F))
++            base_CR = float(params.get('CR', mu_CR))
++
++            # Use externally provided F/CR (from controller or static params) as
++            # the current mean for JADE-style per-individual sampling.
++            mu_F = min(1.0, max(0.1, base_F))
++            mu_CR = min(1.0, max(0.0, base_CR))
++
+             prev_gbest_f = gbest_f
+-            
+-            # Generate trial vectors
++
++            # Generate per-individual F and CR values
++            F_vals = np.empty(pop_size, dtype=float)
++            CR_vals = np.empty(pop_size, dtype=float)
++            for i in range(pop_size):
++                # Sample F from a truncated Cauchy distribution
++                F_i = float(rng.standard_cauchy())
++                while F_i <= 0.0:
++                    F_i = float(rng.standard_cauchy())
++                F_vals[i] = min(1.0, max(0.1, mu_F + 0.1 * F_i))
++
++                # Sample CR from a truncated normal distribution
++                CR_i = float(rng.normal(mu_CR, 0.1))
++                CR_vals[i] = min(1.0, max(0.0, CR_i))
++
++            # Sorted population indices by fitness for pbest selection
++            sorted_idx = np.argsort(fitness)
++            pbest_count = max(1, int(pbest_ratio * pop_size))
++
+             new_pop = np.copy(pop)
++            successful_F = []
++            successful_CR = []
++
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
++                x_i = pop[i].copy()
++
++                # Randomly choose one of the top pbest individuals
++                pbest_idx = sorted_idx[rng.randint(0, pbest_count)]
++                x_pbest = pop[pbest_idx]
++
++                # Choose r1 different from i
++                r1_idx = i
++                while r1_idx == i:
++                    r1_idx = rng.randint(0, pop_size)
++                x_r1 = pop[r1_idx]
++
++                # Choose r2 from population union archive, different from i and r1
++                r2_idx = i
++                tries = 0
++                while tries < 50:
++                    tries += 1
++                    if len(archive) > 0 and rng.random() < 0.5:
++                        r2_idx = pop_size + rng.randint(0, len(archive))
++                        break
++                    r2_idx = rng.randint(0, pop_size)
++                    if r2_idx != i and r2_idx != r1_idx:
++                        break
++
++                if r2_idx < pop_size:
++                    x_r2 = pop[r2_idx]
+                 else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
+-                
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
+-                
+-                # Mutation and crossover
++                    x_r2 = archive[r2_idx - pop_size]
++
++                F_i = F_vals[i]
++                CR_i = CR_vals[i]
++
++                # JADE current-to-pbest/1 mutation
++                v = x_i + F_i * (x_pbest - x_i) + F_i * (x_r1 - x_r2)
++
++                # Binomial crossover
+                 j_rand = rng.randint(0, self.dim)
++                u = v.copy()
+                 for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
+-                
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
+-            
++                    if not (rng.random() < CR_i or j == j_rand):
++                        u[j] = x_i[j]
++
++                # Boundary handling: reflection, then random reinit if still outside
++                for j in range(self.dim):
++                    if u[j] < lb[j]:
++                        u[j] = 2.0 * lb[j] - u[j]
++                        if u[j] > ub[j]:
++                            u[j] = lb[j] + rng.random() * (ub[j] - lb[j])
++                    elif u[j] > ub[j]:
++                        u[j] = 2.0 * ub[j] - u[j]
++                        if u[j] < lb[j]:
++                            u[j] = lb[j] + rng.random() * (ub[j] - lb[j])
++                u = np.clip(u, lb, ub)
++                new_pop[i] = u
++
+             # Evaluate trial vectors
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+@@ -157,26 +241,76 @@ class DEOptimizer:
+                     break
+                 trial_f = evaluate_problem(problem, new_pop[i])
+                 evals += 1
+-                
+-                # Greedy selection
++
++                # Greedy selection with archive update
+                 if trial_f < fitness[i]:
++                    # Move the replaced individual into the archive
++                    if len(archive) < max_archive_size:
++                        archive.append(pop[i].copy())
++                    else:
++                        archive[rng.randint(0, len(archive))] = pop[i].copy()
++
+                     pop[i] = new_pop[i].copy()
+                     fitness[i] = trial_f
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+-            
++
++                    successful_F.append(F_vals[i])
++                    successful_CR.append(CR_vals[i])
++
++            # Update JADE parameter memories from successful trials
++            if len(successful_F) > 0:
++                sf = np.asarray(successful_F, dtype=float)
++                sc = np.asarray(successful_CR, dtype=float)
++                if np.sum(sf) > 1e-12:
++                    # Lehmer mean of F (emphasizes larger successful F values)
++                    mu_F = (1.0 - c) * mu_F + c * float(np.sum(sf * sf) / np.sum(sf))
++                mu_F = min(1.0, max(0.1, mu_F))
++                if len(sc) > 0:
++                    mu_CR = (1.0 - c) * mu_CR + c * float(np.mean(sc))
++                mu_CR = min(1.0, max(0.0, mu_CR))
++
++            # Stagnation-triggered restart for diversity maintenance
++            if gbest_f < prev_gbest_f:
++                no_improve_streak = 0
++            else:
++                no_improve_streak += 1
++
++            if no_improve_streak >= restart_threshold and evals < self.max_evals:
++                # Reinitialize most of the population, keeping only the current best
++                restart_best_idx = int(np.argmin(fitness))
++                n_restart = max(1, int(0.7 * pop_size))
++                restart_idx = rng.choice(pop_size, size=n_restart, replace=False)
++                for idx in restart_idx:
++                    if idx == restart_best_idx:
++                        continue
++                    if rng.random() < 0.5:
++                        # Heavy mutation around the current best
++                        pop[idx] = gbest + 0.5 * rng.uniform(lb, ub)
++                    else:
++                        # Full random reinitialization in the search space
++                        pop[idx] = rng.uniform(lb, ub)
++                    pop[idx] = np.clip(pop[idx], lb, ub)
++                    # Mark as unevaluated so the next trial is accepted
++                    fitness[idx] = np.inf
++                archive.clear()
++                mu_F = 0.8
++                mu_CR = 0.9
++                no_improve_streak = 0
++
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+-            
++
+             # Store transition in controller's replay buffer
+             if self.controller is not None and train:
+-                next_obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 
+-                           'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
++                next_obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f,
++                           'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals,
++                           'stagnation': no_improve_streak, 'diversity': pop_div}
+                 done = (evals >= self.max_evals)
+                 if hasattr(self.controller, 'store_reward'):
+                     self.controller.store_reward(improved, next_obs, done)
+-            
++
+             done = (evals >= self.max_evals)
+ 
+         self.stats = {
+diff --git a/metabbo/meta_learning.py b/metabbo/meta_learning.py
+index 901fe26..1edb4ea 100644
+--- a/metabbo/meta_learning.py
++++ b/metabbo/meta_learning.py
+@@ -58,7 +58,7 @@ class DQNController(ParamController):
+     The network outputs unbounded real values; `step` maps them to
+     DE parameter ranges: F in [0.1, 1.0], CR in [0.0, 1.0].
+     """
+-    def __init__(self, model_path: str = None, obs_dim: int = 3, device: str = 'cpu'):
++    def __init__(self, model_path: str = None, obs_dim: int = 5, device: str = 'cpu'):
+         if torch is None:
+             raise RuntimeError('torch is required for DQNController')
+         self.device = torch.device(device)
+@@ -83,7 +83,14 @@ class DQNController(ParamController):
+             rel_improve = max(0.0, min(1.0, (np.log(abs(init_f)) - np.log(abs(gbest_f))) / max(1.0, abs(np.log(abs(init_f))))))
+         else:
+             rel_improve = 0.0
+-        obs = [progress, rel_improve, gbest_f]
++        stagnation = float(observation.get('stagnation', 0))
++        diversity = float(observation.get('diversity', 0.0))
++        # Normalize gbest_f to a stable bounded representation
++        if np.isfinite(gbest_f) and gbest_f != 0.0:
++            gbest_f_norm = float(np.tanh(np.log10(abs(gbest_f)) * np.sign(gbest_f) / 10.0))
++        else:
++            gbest_f_norm = 0.0
++        obs = [progress, rel_improve, gbest_f_norm, stagnation / 50.0, diversity]
+         
+         net_dtype = self.net.fc1.weight.dtype
+         x = torch.tensor(obs, dtype=net_dtype, device=self.device).unsqueeze(0)
+@@ -136,7 +143,7 @@ class DiscreteDQNController(ParamController):
+     Online training: stores transitions in a replay buffer and performs
+     a DQN update every `update_freq` steps.
+     """
+-    def __init__(self, model_path: str = None, obs_dim: int = 3, bins: int = 5,
++    def __init__(self, model_path: str = None, obs_dim: int = 5, bins: int = 5,
+                 device: str = 'cpu', training: bool = False, update_freq: int = 10,
+                 buffer_capacity: int = 1000, batch_size: int = 64,
+                 lr: float = 1e-4, gamma: float = 0.99, target_update_freq: int = 50,
+@@ -228,7 +235,9 @@ class DiscreteDQNController(ParamController):
+             gbest_f_norm = float(np.tanh(np.log10(abs(gbest_f)) * np.sign(gbest_f) / 10.0))
+         else:
+             gbest_f_norm = 0.0
+-        obs = [progress, rel_improve, gbest_f_norm]
++        stagnation = float(observation.get('stagnation', 0))
++        diversity = float(observation.get('diversity', 0.0))
++        obs = [progress, rel_improve, gbest_f_norm, stagnation / 50.0, diversity]
+         net_dtype = self.net.fc1.weight.dtype
+         return torch.tensor(obs, dtype=net_dtype, device=self.device)
+ 
+diff --git a/metabbo/meta_learning_env.py b/metabbo/meta_learning_env.py
+index f3c0764..75d5377 100644
+--- a/metabbo/meta_learning_env.py
++++ b/metabbo/meta_learning_env.py
+@@ -110,7 +110,9 @@ class DQNEnv:
+         return obs, float(reward), done, info
+ 
+     def _get_obs(self) -> Dict[str, Any]:
+-        return {'iteration': 0, 'evals': int(self.total_evals), 'gbest_f': float(self.current_best_f), 'initial_gbest_f': float(self.init_best_f), 'max_evals': int(self.max_evals)}
++        return {'iteration': 0, 'evals': int(self.total_evals), 'gbest_f': float(self.current_best_f),
++                'initial_gbest_f': float(self.init_best_f), 'max_evals': int(self.max_evals),
++                'stagnation': 0, 'diversity': 0.0}
+ 
+     def render(self):
+         print('evals', self.total_evals, 'best_f', self.current_best_f)
+\ No newline at end of file
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..8c67963 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -5,7 +5,8 @@ be injected into `PSOOptimizer` to adjust parameters dynamically. This is
+ the hook that a DQN-based controller should implement.
+ """
+ from abc import ABC, abstractmethod
+-from typing import Dict, Any
++from typing import Dict, Any, List, Optional
++import numpy as np
+ 
+ # Import global configuration
+ import sys
+@@ -131,10 +132,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(np.log(self.epsilon_start))
++        log_eps_end = float(np.log(self.epsilon_end))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(np.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.
+diff --git a/hyper_agent.py b/hyper_agent.py
+index abb80da..3308533 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -128,6 +128,7 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+    - **Try completely different algorithm combinations**: CMA-ES + PPO, SHADE + Bayesian Opt, NSGA-III + L2O, etc.
+    - **Explore different search operators, selection mechanisms, and parameter adaptation strategies**
+ 
++## CRITICAL: TASK AGENT MUST ACTUALLY EDIT - If chat_history shows no editor str_replace call, next task_agent prompt must add: "You MUST call editor str_replace on /hada/metabbo/ec_algorithm.py".
+ 7. **CHECK DOMAIN EVALUATION PATTERNS** - CRITICAL:
+    - **ALWAYS check the domain folder (e.g., /hada/domains/bbob_unconstrained/dqn_de_util.py) to see how evaluation is called**
+    - **The evaluation function is typically a module-level function like `evaluate_problem(problem, x)` - DO NOT convert it to a class method like `self._eval_task()` unless you define it first**
+diff --git a/task_agent.py b/task_agent.py
+index 8e1db9e..7f7b0e2 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -77,12 +77,13 @@ So your modified `ec_algorithm.py` MUST still provide:
+ ### ⚠️ ABSOLUTE REQUIREMENT: YOU MUST REPLACE THE ALGORITHM, NOT JUST TWEAK PARAMETERS
+ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. Scores have plateaued because prior attempts only tweaked parameters (w, c1, c2, F, CR). **THIS IS A FAILURE MODE.**
+ 
+-**CURRENT STATUS (gen_16):** A SHADE (Success-History Adaptive DE) was already implemented in `/hada/metabbo/ec_algorithm.py` by a previous Task Agent. It scored **0.9244**, which is **BELOW the best-known score of 0.93121** (from gen_11). So just adding SHADE is NOT enough. You MUST either (a) add a new mechanism on top of the existing SHADE (LPSR, restart, local search, OBL, ensemble), or (b) switch to a different algorithm family (CMA-ES, jDE, SaNSDE, CoDE) that can perform better.
++**CURRENT STATUS (as of gen_47):** A SHADE (Success-History Adaptive DE) was already implemented in `/hada/metabbo/ec_algorithm.py` by a previous Task Agent. It scored **0.9244**, which is **BELOW the best-known score of 0.93121** (from gen_11). So just adding SHADE is NOT enough. You MUST either (a) add a new mechanism on top of the existing SHADE (LPSR, restart, local search, OBL, ensemble), or (b) switch to a different algorithm family (CMA-ES, jDE, SaNSDE, CoDE) that can perform better.
+ You MUST make a **structural change to the core search mechanism**:
+ - Replace the mutation/crossover/selection logic in `DEOptimizer` with a fundamentally different algorithm (SHADE, JADE, CMA-ES, L-SHADE, etc.)
+ - Add new mechanisms: external archive, parameter adaptation, population restart, local search, opposition-based learning, diversity maintenance
+ - Changing constants, adding tiny random perturbations, or altering initialization only is NOT acceptable
+ - If your diff only changes numeric literals (e.g., F=0.5 to F=0.7, swarm_size 40 to 50, adding `+ 0.1*rand`), it will be rejected
++- **GEN_47 FAILED: You MUST call editor str_replace to modify ec_algorithm.py.**
+ 
+ You can improve dramatically by:
+ 

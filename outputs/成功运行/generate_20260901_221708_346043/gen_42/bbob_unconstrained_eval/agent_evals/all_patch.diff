@@ -1,0 +1,272 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..375c775 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -113,6 +113,10 @@ class DEOptimizer:
+         # Main loop
+         iteration = 0
+         done = False
++        archive = []
++        max_archive_size = max(pop_size, int(pop_size * float(self.params.get('archive_size', 1.0))))
++        p_best_ratio = float(self.params.get('p_best', 0.1))
++        adaptive_scale = float(self.params.get('adaptive_scale', 0.1))
+         
+         while not done:
+             iteration += 1
+@@ -126,31 +130,78 @@ class DEOptimizer:
+             
+             F = float(params.get('F', self.F))
+             CR = float(params.get('CR', self.CR))
++            p_best_ratio = float(params.get('p_best', p_best_ratio))
++            adaptive_scale = float(params.get('adaptive_scale', adaptive_scale))
+             
+             prev_gbest_f = gbest_f
+             
+-            # Generate trial vectors
++            # JADE-style trial generation with p-best mutation and archive
++            sorted_idx = np.argsort(fitness)
++            n_pbest = max(1, int(round(p_best_ratio * pop_size)))
++            pbest_pool = sorted_idx[:n_pbest]
++            
++            # Combined candidate pool: population + archive
++            combined = list(range(pop_size)) + (list(range(len(archive))) if len(archive) > 0 else [])
++            if len(combined) < 3:
++                combined = list(range(pop_size))
++            
+             new_pop = np.copy(pop)
++            success_F = []
++            success_CR = []
++            
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
++                x_i = pop[i]
++                
++                # Per-individual adaptive F and CR around controller/base values
++                if adaptive_scale > 0.0:
++                    F_i = float(np.clip(F + adaptive_scale * rng.randn(), 0.05, 1.0))
++                    CR_i = float(np.clip(CR + adaptive_scale * rng.randn(), 0.0, 1.0))
+                 else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
++                    F_i = F
++                    CR_i = CR
++                
++                # p-best vector: one of the top p_best_ratio individuals
++                pbest_idx = int(pbest_pool[rng.randint(len(pbest_pool))])
++                pbest = pop[pbest_idx]
+                 
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
++                # Select two distinct random parents from combined pool,
++                # excluding the current individual index when it can be identified.
++                excluded = {i}
++                cand = [ci for ci in range(len(combined)) if combined[ci] not in excluded or len(combined) < 3]
++                if len(cand) < 2:
++                    cand = list(range(len(combined)))
++                r1_pos, r2_pos = rng.choice(cand, size=2, replace=False)
++                r1 = combined[r1_pos]
++                r2 = combined[r2_pos]
+                 
+-                # Mutation and crossover
++                if r1 < pop_size:
++                    x_r1 = pop[r1]
++                else:
++                    x_r1 = archive[r1 - pop_size]
++                if r2 < pop_size:
++                    x_r2 = pop[r2]
++                else:
++                    x_r2 = archive[r2 - pop_size]
++                
++                # JADE mutation: v = x + F*(pbest - x) + F*(x_r1 - x_r2)
++                mutant = x_i + F_i * (pbest - x_i) + F_i * (x_r1 - x_r2)
++                
++                # Binomial crossover
+                 j_rand = rng.randint(0, self.dim)
+-                for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
++                mask = rng.random(self.dim) < CR_i
++                mask[j_rand] = True
++                trial = np.where(mask, mutant, x_i)
+                 
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
++                # Boundary handling: reflect with clipping fallback
++                out_low = trial < lb
++                out_high = trial > ub
++                trial[out_low] = lb[out_low] + (lb[out_low] - trial[out_low])
++                trial[out_high] = ub[out_high] - (trial[out_high] - ub[out_high])
++                trial = np.clip(trial, lb, ub)
++                
++                new_pop[i] = trial
+             
+-            # Evaluate trial vectors
++            # Evaluate trial vectors and perform JADE-style selection with archive
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+@@ -158,13 +209,23 @@ class DEOptimizer:
+                 trial_f = evaluate_problem(problem, new_pop[i])
+                 evals += 1
+                 
+-                # Greedy selection
+                 if trial_f < fitness[i]:
++                    # Add the displaced solution to the archive
++                    archive.append(pop[i].copy())
++                    if len(archive) > max_archive_size:
++                        del archive[rng.randint(len(archive))]
+                     pop[i] = new_pop[i].copy()
+                     fitness[i] = trial_f
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
++                    success_F.append(F_i)
++                    success_CR.append(CR_i)
++            
++            # JADE-style memory update: adapt F and CR from successful trials
++            if len(success_F) > 0:
++                self.F = float(np.mean(success_F))
++                self.CR = float(np.mean(success_CR))
+             
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..a515a87 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -45,7 +45,11 @@ class StaticController(ParamController):
+ 
+ class DummyHeuristicController(ParamController):
+     """A tiny heuristic that decays inertia weight and adjusts
+-    cognitive/social coefficients based on progress."""
++    cognitive/social coefficients based on progress.
++
++    Also supports JADE/DE-style parameters and includes stagnation
++    detection to temporarily boost diversity.
++    """
+     def __init__(self, w_start=0.9, w_end=0.4, decay_iters=100):
+         self.w_start = w_start
+         self.w_end = w_end
+@@ -53,18 +57,96 @@ class DummyHeuristicController(ParamController):
+ 
+     def reset(self, problem_meta: Dict[str, Any]) -> None:
+         self.it = 0
++        self.last_gbest = None
++        self.stagnation_count = 0
+ 
+     def step(self, observation: Dict[str, Any]) -> Dict[str, float]:
+         self.it = observation.get('iteration', self.it + 1)
+-        t = min(1.0, float(self.it) / max(1, self.decay_iters))
++        evals = float(observation.get('evals', self.it * 100))
++        max_evals = float(observation.get('max_evals', max(1.0, evals)))
++        # Prefer evaluation-budget progress, fall back to iteration count
++        t = min(1.0, evals / max(1.0, max_evals))
++        if t <= 0.0:
++            t = min(1.0, float(self.it) / max(1, self.decay_iters))
+         w = self.w_start * (1 - t) + self.w_end * t
+         # Encourage exploration early, exploitation later
+         c1 = 1.8 * (1.0 - 0.5 * t)
+         c2 = 1.4 + 0.4 * t
+-        # Also support DE-style parameters for multi-objective DE optimizers
++        # Also support DE-style parameters for JADE/DE optimizers
+         F = 0.9 - 0.5 * t  # Large mutation early, refined late
+         CR = 0.9 - 0.4 * t # More crossover early for diversity
+-        return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR}
++
++        # Stagnation detection: boost diversity if best has not improved
++        current_gbest = observation.get('gbest_f', None)
++        if current_gbest is not None and self.last_gbest is not None:
++            if current_gbest < self.last_gbest - 1e-12:
++                self.stagnation_count = 0
++            else:
++                self.stagnation_count += 1
++        self.last_gbest = current_gbest
++        if self.stagnation_count > 5:
++            F = min(1.0, F + 0.2)
++            CR = min(1.0, CR + 0.2)
++            self.stagnation_count = 0
++
++        # JADE-specific dynamics: tightly focus p-best and per-individual
++        # adaptation scales as the search progresses toward exploitation.
++        p_best = max(0.05, 0.20 - 0.10 * t)
++        adaptive_scale = max(0.01, 0.15 * (1.0 - t))
++
++        return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR,
++                'p_best': p_best, 'adaptive_scale': adaptive_scale}
++
++
++class JADEHeuristicController(ParamController):
++    """Adaptive JADE-style controller.
++
++    Starts with broad exploration and gradually moves toward
++    exploitation while detecting stagnation and relaxing the mutation
++    and crossover parameters when progress stalls.
++    """
++    def __init__(self, f_start=0.9, f_end=0.3, cr_start=0.9, cr_end=0.4,
++                 p_best_start=0.2, p_best_end=0.05,
++                 adaptive_start=0.15, adaptive_end=0.01):
++        self.f_start = f_start
++        self.f_end = f_end
++        self.cr_start = cr_start
++        self.cr_end = cr_end
++        self.p_best_start = p_best_start
++        self.p_best_end = p_best_end
++        self.adaptive_start = adaptive_start
++        self.adaptive_end = adaptive_end
++
++    def reset(self, problem_meta: Dict[str, Any]) -> None:
++        self.last_gbest = None
++        self.stagnation_count = 0
++
++    def step(self, observation: Dict[str, Any]) -> Dict[str, float]:
++        evals = float(observation.get('evals', 0))
++        max_evals = float(observation.get('max_evals', max(1.0, evals)))
++        t = min(1.0, evals / max(1.0, max_evals))
++
++        F = self.f_start * (1.0 - t) + self.f_end * t
++        CR = self.cr_start * (1.0 - t) + self.cr_end * t
++        p_best = self.p_best_start * (1.0 - t) + self.p_best_end * t
++        adaptive_scale = self.adaptive_start * (1.0 - t) + self.adaptive_end * t
++
++        current_gbest = observation.get('gbest_f', None)
++        if current_gbest is not None and self.last_gbest is not None:
++            if current_gbest < self.last_gbest - 1e-12:
++                self.stagnation_count = 0
++            else:
++                self.stagnation_count += 1
++        self.last_gbest = current_gbest
++        if self.stagnation_count > 5:
++            F = min(1.0, F + 0.2)
++            CR = min(1.0, CR + 0.2)
++            p_best = min(0.4, p_best + 0.05)
++            adaptive_scale = min(0.3, adaptive_scale + 0.05)
++            self.stagnation_count = 0
++
++        return {'F': float(F), 'CR': float(CR),
++                'p_best': float(p_best), 'adaptive_scale': float(adaptive_scale)}
+ 
+ 
+ class AdaptiveDEController(ParamController):
+diff --git a/task_agent.py b/task_agent.py
+index bd1600a..f8c3b4e 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -133,6 +133,17 @@ A structurally upgraded algorithm that is too slow will cause the evaluation to
+ - Keep archive operations cheap (simple append/truncate, not full scans).
+ - **MANDATORY smoke test before finishing**: run a quick 20D sphere test with 2000 evals and ensure it completes in <30 seconds.
+ 
++## 🚨 MANDATORY VECTORIZATION VERIFICATION (DO NOT SKIP - LAST ATTEMPT FAILED THIS)
++The previous generation (gen_38) Task Agent implemented JADE-style mutation but used **nested Python loops** (`for i in range(pop_size): ... for j in range(self.dim)`) - exactly the code pattern prohibited above. That is why the structural change was effectively wasted. **You MUST verify with `grep` that your edited `ec_algorithm.py` has NO line containing `for j in range`.** Run this command before finishing:
++
++```
++grep -n 'for j in range' /hada/metabbo/ec_algorithm.py
++```
++
++If the above command prints ANY line, **you have FAILED the performance requirement** - rewrite that section using the vectorized template below. The ONLY Python loop allowed is the `for i in range(pop_size):` loop that (a) calls `evaluate_problem(problem, trials[i])` and (b) increments `evals`. Everything else (mutation, crossover, boundary repair, pbest selection, archive update, SHADE success-history) MUST be NumPy array operations on the whole population at once.
++
++Also: **do NOT touch `/hada/metabbo/param_controller.py`** unless you have a very specific, justified reason. The previous generation also introduced a stray `imp` line into that file, causing a syntax error. If you do edit it, run a syntax check on it too (see checklist below).
++
+ ## COMPLETE VECTORIZED JADE/SHADE OPTIMIZE() BODY (COPY THIS - DO NOT WRITE YOUR OWN LOOPS)
+ Based on gen_35 analysis, even a "structural" JADE attempt with per-individual Python loops (`for i in range(pop_size): ... for j in range(self.dim)`) will time out on 20D/2000-eval. **You MUST use the fully vectorized template below.** It is algorithmically sound (JADE/SHADE: archive, pbest mutation, success-history adaptation) AND runs in milliseconds per generation on 20D.
+ 

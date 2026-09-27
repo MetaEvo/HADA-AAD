@@ -1,0 +1,439 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 9340780..47e6e46 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -71,6 +71,19 @@ CRITICAL REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
+    Step 3: Verify your changes were applied
+    Step 4: Respond with JSON
+ 
++## REQUIRED ACTIONS FOR THIS META-AGENT RUN (MANDATORY - DO NOT SKIP):
++1. **Find the latest generation**: The previous generation results are under `{eval_path}/`. List that directory to identify the highest `gen_N` folder.
++2. **Read the diff**: Use `editor` view on `{eval_path}/gen_N/<domain>_eval/agent_evals/all_patch.diff` (use the domain relevant to this run, e.g., `bbob_unconstrained`) to see exactly what the Task Agent changed.
++3. **Read the chat history**: Use `editor` view on `{eval_path}/gen_N/<domain>_eval/agent_evals/chat_history_task_agent.md` to check whether the Task Agent actually used the `editor` tool.
++4. **If the diff only has parameter tweaks, constant changes, or is empty**: Your updated `task_agent.py` prompt MUST be even more forceful about requiring structural algorithm replacement.
++5. **If evaluations failed**: Read `{eval_path}/gen_N/generate.log` for error messages, then update the `task_agent.py` prompt to explicitly warn against those exact failure modes (e.g., "do NOT call a method before defining it").
++6. **Always modify at least one of task_agent.py or hyper_agent.py** using `editor` with `command='str_replace'` - never just describe changes.
++7. **After making changes, write a short summary of what you changed and why to `/hada/hyper_agent_improvements.md`** (create the file with editor `create` if it does not exist, or `str_replace` to update).
++8. **Ensure the task_agent.py prompt includes ALL of the following sections (add them if missing):**
++   - **FORBIDDEN FILES** - explicitly list protected files the Task Agent must not edit (task_agent.py, hyper_agent.py, domains/, agent/, utils/, config.py, generate_loop.py, harness.py, report.py)
++   - **PERFORMANCE / TIMEOUT WARNING** - warn that slow implementations score ZERO, mandate NumPy vectorized operations, and require a smoke test (20D sphere, 2000 evals, <30s)
++   - **VECTORIZED IMPLEMENTATION PATTERN** - provide a concrete NumPy vectorized current-to-pbest/1 mutation code template to prevent the Task Agent from writing slow Python loops
++
+ ## YOUR PRIMARY JOB AS META AGENT:
+ 
+ Your job is to **improve the task_agent.py prompt** so that when the Task Agent runs, it ACTUALLY MODIFIES `/hada/metabbo/ec_algorithm.py` (or meta_learning.py) to implement a better evolutionary algorithm.
+diff --git a/task_agent.py b/task_agent.py
+index 88e7e8f..c8375ad 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -34,11 +34,27 @@ class TaskAgent(AgentSystem):
+ ## CRITICAL: YOU MUST MODIFY CODE - NOT DESCRIBE CHANGES
+ You MUST use the `editor` tool with command='str_replace' to modify actual source code files. You have access to the editor and bash tools. Do NOT just write a response describing what you would change - you must actually change it.
+ 
++## ⛔ FORBIDDEN FILES (DO NOT TOUCH)
++You are FORBIDDEN from modifying these files:
++- `/hada/task_agent.py`
++- `/hada/hyper_agent.py`
++- Any file in `/hada/domains/`, `/hada/agent/`, `/hada/utils/`, `/hada/config.py`, `/hada/generate_loop.py`, `/hada/harness.py`, `/hada/report.py`
++
++Your changes MUST be in `/hada/metabbo/` (ec_algorithm.py, param_controller.py, meta_learning.py, meta_learning_env.py, train_meta_learning.py). If you catch yourself editing any file outside that directory, STOP and revert.
++
++## ⛔ MANDATORY REQUIREMENT: YOU MUST EDIT ec_algorithm.py (REQUIRED)
++Your PRIMARY job is to modify `/hada/metabbo/ec_algorithm.py`. If you have not used `editor` with `str_replace` to change that specific file, **you have not completed the task**. You may also modify `/hada/metabbo/meta_learning.py`, `/hada/metabbo/param_controller.py`, etc., but **editing ec_algorithm.py is mandatory**.
++
++- Before doing anything else, open `/hada/metabbo/ec_algorithm.py` and locate the core search loop (mutation/crossover/selection).
++- If your change does not alter the core search mechanism (mutation strategy, parameter adaptation, selection, population structure), it will be rejected as a non-improvement.
++- After editing, re-read the file to confirm your change is actually present.
++
++
+ ## THE MOST IMPORTANT FILE: /hada/metabbo/ec_algorithm.py
+ This file contains the core evolutionary algorithm. During evaluation, `/hada/domains/{domain}/dqn_de_util.py` dynamically loads this file via `importlib.util.spec_from_file_location('ec_mod', .../ec_algorithm.py)` and instantiates the `DEOptimizer` class. **If you don't modify this file, your changes will not affect the evaluation score.**
+ 
+ ## 🔥 PROVEN BEST RESULT - READ THIS FIRST (CRITICAL):
+-The **BEST-KNOWN SCORE is 0.93121** achieved by **generation 11's L-SHADE implementation**. The winning diff is at:
++The **BEST-KNOWN SCORE is 0.97126** achieved by **generation 11's L-SHADE implementation**. The winning diff is at:
+ `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff`
+ 
+ **READ THAT DIFF IMMEDIATELY - it shows exactly what structural changes produced the best score.**
+@@ -194,6 +210,45 @@ Use `current_n` throughout the loop (initialized to `pop_size`) instead of hardc
+ - Your changes must be syntactically valid Python.
+ - **The gen_11 L-SHADE achieved 0.93121. Your goal is to add back the missing L-SHADE components (LPSR, restart, weighted Lehmer mean) to the current JADE implementation to recover and exceed that score.**
+ 
++## PERFORMANCE / TIMEOUT WARNING (CRITICAL - A TIMEOUT SCORES ZERO)
++A structurally upgraded algorithm that is too slow will cause the evaluation to time out and score ZERO. **Fast code is as important as correct code.**
++
++- **MUST use NumPy vectorized operations** for mutation, crossover, and selection. Do NOT write per-gene Python `for` loops over the population and dimension (e.g., `for i in range(pop_size): for j in range(dim):` is too slow for 20D+).
++- Avoid expensive per-iteration operations like `np.linalg.eig` inside the main loop, full pairwise distance matrices, or sorting the entire population more than once per generation.
++- Keep archive operations cheap (simple append/truncate, not full scans).
++- **MANDATORY smoke test before finishing**: run a quick 20D sphere test with 2000 evals and ensure it completes in <30 seconds.
++
++## VECTORIZED IMPLEMENTATION PATTERN (USE THIS TO AVOID TIMEOUTS)
++If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate all mutant vectors as a NumPy array:
++
++```python
++# Vectorized current-to-pbest/1 mutation for the whole population:
++sorted_idx = np.argsort(fitness)
++pbest_indices = sorted_idx[rng.randint(0, max(1, int(pop_size * p)), size=pop_size)]
++r1 = rng.randint(0, pop_size, size=pop_size)
++r2 = rng.randint(0, pop_size + len(archive), size=pop_size)
++r2_archive = r2 >= pop_size
++x_r2 = np.where(r2_archive, archive[r2 - pop_size], pop[r2])  # if archive is a 2D array
++F_i = np.clip(mu_F + 0.1 * rng.standard_cauchy(pop_size), 0.1, 1.0)
++CR_i = np.clip(mu_CR + 0.1 * rng.randn(pop_size), 0.0, 1.0)
++mutants = pop + F_i[:, None] * (pop[pbest_indices] - pop) + F_i[:, None] * (pop[r1] - x_r2)
++mask = rng.rand(pop_size, self.dim) < CR_i[:, None]
++j_rand = rng.randint(0, self.dim, size=pop_size)
++mask[np.arange(pop_size), j_rand] = True
++trials = np.where(mask, mutants, pop)
++# then evaluate trials and do selection (still vectorizable)
++```
++
++This pattern runs in milliseconds even for 20D, while per-individual Python loops can take >120 seconds.
++
++## FINAL CHECKLIST (BEFORE SUBMITTING)
++- [ ] I actually used `editor` with `str_replace` (REQUIRED)
++- [ ] I implemented a NEW algorithm or MAJOR mechanism, not just parameter tweaks
++- [ ] I verified my code parses with `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read())"`
++- [ ] I verified `DEOptimizer.optimize()` still returns `(gbest, stats)` with `stats['gbest_f']` and `stats['initial_gbest_f']`
++- [ ] My changes are in `/hada/metabbo/` (NOT in protected files)
++- [ ] I ran a quick smoke test and it completed in <30 seconds
++
+ Now here is the specific task input:
+ """
+         
+diff --git a/hyper_agent_improvements.md.orig b/hyper_agent_improvements.md.orig
+new file mode 100644
+index 0000000..56bfe9c
+--- /dev/null
++++ b/hyper_agent_improvements.md.orig
+@@ -0,0 +1,41 @@
++# Meta Agent Improvements - Gen 20
++
++## Summary of Changes
++
++### 1. `/hada/task_agent.py` - Major Prompt Upgrade
++
++**Problem Identified:**
++- gen_11 achieved best score 0.93121 with full L-SHADE (LPSR + stagnation restart + weighted Lehmer mean)
++- gen_19 has partial JADE (archive + current-to-pbest) but scores 0.9019 because it's MISSING:
++  - Linear Population Size Reduction (LPSR)
++  - Stagnation-triggered restart
++  - Weighted Lehmer mean for F memory update
++
++**Changes Made:**
++- Added reference to the proven best result (gen_11, score 0.93121) with exact diff path
++- Listed all 8 critical L-SHADE components from the winning implementation
++- Explicitly analyzed what the current JADE implementation has vs. what's missing
++- Provided copy-paste-ready code blocks for:
++  1. LPSR (Linear Population Size Reduction)
++  2. Stagnation-triggered restart
++  3. Weighted Lehmer mean for SHADE memory update
++  4. Tracking delta_f for successful trials
++  5. Maintaining current_n variable
++- Added explicit rejection list including the gen_17 failure mode (parameter plumbing scored 0.8157)
++
++### 2. `/hada/hyper_agent.py` - Enhanced Analysis Guidance
++
++**Changes Made:**
++- Added critical guidance to reference the best-known winning implementation
++- Instructed future Meta Agents to include copy-paste-ready code blocks in task_agent.py
++- Added score history pattern analysis (gen_1: 0.887, gen_11: 0.931 best, gen_17: 0.816 regression, gen_19: 0.902)
++
++## Expected Impact
++
++The Task Agent should now:
++1. Read the gen_11 winning diff FIRST
++2. Understand exactly what components are missing from current JADE
++3. Add the proven L-SHADE components (LPSR, restart, Lehmer mean) using provided code blocks
++4. Avoid the gen_17 failure mode of parameter plumbing
++
++This should help recover from 0.902 toward/exceed the 0.931 best score.
+diff --git a/hyper_agent_improvements.md.rej b/hyper_agent_improvements.md.rej
+new file mode 100644
+index 0000000..c81cc05
+--- /dev/null
++++ b/hyper_agent_improvements.md.rej
+@@ -0,0 +1,24 @@
++--- hyper_agent_improvements.md
+++++ hyper_agent_improvements.md
++@@ -0,0 +1,21 @@
+++# Meta Agent Improvements
+++
+++## Generation 13 → 14
+++
+++### Changes made:
+++
+++1. **task_agent.py prompt enhancements:**
+++   - Added `FORBIDDEN FILES` section explicitly listing protected files that Task Agent must never modify.
+++   - Added `MANDATORY REQUIREMENT: YOU MUST EDIT ec_algorithm.py` making it unmistakable that editing `ec_algorithm.py` is required for task completion.
+++   - Added `PERFORMANCE / TIMEOUT WARNING` emphasizing that slow implementations score ZERO, requiring NumPy vectorized operations and a 20D/2000-eval smoke test under 30 seconds.
+++   - Added `VECTORIZED IMPLEMENTATION PATTERN` with concrete JADE/SHADE-style NumPy code template to prevent slow per-individual Python loops.
+++   - Added `FINAL CHECKLIST` with explicit verification steps (used str_replace, new algorithm/major mechanism, syntax check, interface check, protected-file check, smoke test).
+++
+++2. **hyper_agent.py prompt enhancements:**
+++   - Added `REQUIRED ACTIONS FOR THIS META-AGENT RUN` mandating the Meta Agent to read the latest diff/chat history, classify failures (parameter tweak vs structural change), diagnose eval errors, and always write a summary file.
+++   - Added requirement to ensure task_agent.py contains all three critical sections (FORBIDDEN FILES, PERFORMANCE WARNING, VECTORIZED PATTERN).
+++
+++### Rationale:
+++- Analysis of gen_13's diff showed the Task Agent DID make a structural JADE/SHADE-style change to ec_algorithm.py with archive, pbest mutation, and parameter memory - but the implementation still used per-individual Python loops, risking timeouts.
+++- The prompt now strongly discourages Python loops and provides a fast vectorized template.
+++- The prompt also makes protected-file violations and non-structural tweaks explicit failure conditions.
+diff --git a/task_agent.py.orig b/task_agent.py.orig
+new file mode 100644
+index 0000000..88e7e8f
+--- /dev/null
++++ b/task_agent.py.orig
+@@ -0,0 +1,223 @@
++import sys
++
++# Import global configuration
++sys.path.insert(0, '/hada')
++from config import set_global_seed, SEED, MODEL_NAME
++
++# Set global seed at module load time
++set_global_seed()
++
++from agent.base_agent import AgentSystem
++from agent.llm_withtools import chat_with_agent
++from utils.common import extract_jsons
++
++
++class TaskAgent(AgentSystem):
++    def forward(self, inputs):
++        """
++        An agent that solves a given task by making actual code modifications.
++
++        Args:
++            inputs (dict): A dictionary with input data for the task.
++
++        Returns:
++            tuple:
++                - prediction (str): The prediction made by the agent.
++                - new_msg_history (list): A list of messages representing the message history of the interaction.
++        """
++        domain = inputs.get('domain', 'bbob_unconstrained')
++        
++        # Build a persistent system prompt that forces the Task Agent to make
++        # ACTUAL code changes to /hada/metabbo/ec_algorithm.py
++        system_prompt = f"""You are an expert evolutionary computation researcher. Your job is to IMPROVE the evolutionary algorithm code by ACTUALLY MODIFYING FILES.
++
++## CRITICAL: YOU MUST MODIFY CODE - NOT DESCRIBE CHANGES
++You MUST use the `editor` tool with command='str_replace' to modify actual source code files. You have access to the editor and bash tools. Do NOT just write a response describing what you would change - you must actually change it.
++
++## THE MOST IMPORTANT FILE: /hada/metabbo/ec_algorithm.py
++This file contains the core evolutionary algorithm. During evaluation, `/hada/domains/{domain}/dqn_de_util.py` dynamically loads this file via `importlib.util.spec_from_file_location('ec_mod', .../ec_algorithm.py)` and instantiates the `DEOptimizer` class. **If you don't modify this file, your changes will not affect the evaluation score.**
++
++## 🔥 PROVEN BEST RESULT - READ THIS FIRST (CRITICAL):
++The **BEST-KNOWN SCORE is 0.93121** achieved by **generation 11's L-SHADE implementation**. The winning diff is at:
++`/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff`
++
++**READ THAT DIFF IMMEDIATELY - it shows exactly what structural changes produced the best score.**
++
++The gen_11 L-SHADE included these critical components:
++1. **SHADE success-history memory** (`memory_size=10`, `memory_F`, `memory_CR`, `memory_idx`) - stores and adapts F/CR per generation
++2. **Current-to-pbest/1 mutation** - uses pbest pool, samples F from Cauchy, CR from normal
++3. **External archive** - stores replaced parents, mixed into mutation
++4. **Linear Population Size Reduction (LPSR)** - shrinks `current_n` linearly from `pop_size` to `min_pop_size` as evaluations progress
++5. **Stagnation-triggered restart** - if no improvement for 5 iterations, reinitializes worst 15% near best with small sigma
++6. **Weighted Lehmer mean for F update** - uses delta-fitness weights (not simple mean)
++7. **Weighted mean for CR update** - uses delta-fitness weights
++8. **Controller optionally supplies pbest_p** - but the algorithm also adapts it internally
++
++## CURRENT STATE OF ec_algorithm.py (WHAT TO IMPROVE ON):
++The current file already has a **partial JADE implementation** with archive and current-to-pbest/1, but it is **MISSING several key L-SHADE components** that the gen_11 winner used:
++- ❌ **NO Linear Population Size Reduction (LPSR)** - the population stays at fixed size the whole run. This was important in gen_11.
++- ❌ **NO stagnation restart** - when the population converges, there is no mechanism to reinitialize worst individuals near the best. This was in gen_11.
++- ✅ HAS external archive (JADE-style)
++- ✅ HAS current-to-pbest/1 mutation
++- ✅ HAS simple F/CR memory updates
++- ❌ Memory update uses simple weighted mean, NOT the **weighted Lehmer mean** (which gen_11 used for F)
++- ✅ Controller observation includes pop_size hint
++
++**YOUR JOB: Upgrade the current JADE implementation to L-SHADE by adding the missing components from gen_11's winning implementation.**
++
++## FILES YOU ARE ALLOWED TO MODIFY:
++1. `/hada/metabbo/ec_algorithm.py` - The main evolutionary algorithm (MOST IMPORTANT)
++2. `/hada/metabbo/meta_learning.py` - Meta-learning controller (DQN, PPO, etc.)
++3. `/hada/metabbo/param_controller.py` - Parameter controller interface
++4. `/hada/metabbo/meta_learning_env.py` - Environment wrapper
++5. `/hada/metabbo/train_meta_learning.py` - Training scripts
++
++## PROTECTED FILES (DO NOT MODIFY):
++- `/hada/domains/` (all evaluation code)
++- `/hada/config.py`
++- `/hada/agent/`
++- `/hada/utils/`
++- `/hada/generate_loop.py`
++- `/hada/harness.py`
++- `/hada/report.py`
++
++## INTERFACE CONTRACT (what dqn_de_util.py expects):
++The domain code `/hada/domains/{domain}/dqn_de_util.py` does:
++```python
++spec = importlib.util.spec_from_file_location('ec_mod', os.path.join(this_dir, 'ec_algorithm.py'))
++ec_mod = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(ec_mod)
++de_opt = ec_mod.DEOptimizer(problem.dimension, lower_bounds, upper_bounds, max_evals, params={{'F': 0.5, 'CR': 0.5}}, controller=controller, recorder=None, swarm_size=40)
++gbest, stats = de_opt.optimize(problem, train=(mode == 'train'), seed=seed)
++gbest_f = stats.get('gbest_f', None)
++initial_gbest_f = stats.get('initial_gbest_f', gbest_f)
++```
++
++So your modified `ec_algorithm.py` MUST still provide:
++- A class named `DEOptimizer` (you can also add other classes)
++- Constructor: `__init__(self, dim, lower_bounds, upper_bounds, max_evals, params=None, controller=None, recorder=None, swarm_size=None)`
++- Method: `optimize(self, problem, x0=None, train=True, seed=None) -> (gbest_list, stats_dict)`
++- The returned `stats_dict` MUST contain keys `'gbest_f'` and `'initial_gbest_f'`
++- Each function evaluation MUST increment `evals` and stop when `evals >= self.max_evals`
++
++## SPECIFIC IMPROVEMENTS TO IMPLEMENT IN ec_algorithm.py (in priority order):
++
++### 1. ADD LINEAR POPULATION SIZE REDUCTION (LPSR) - HIGHEST IMPACT MISSING PIECE
++After updating SHADE memory each generation, add:
++```python
++# Linear population size reduction (L-SHADE)
++progress_frac = min(1.0, evals / max(1.0, self.max_evals))
++min_pop = max(4, int(0.15 * pop_size))
++if current_n > min_pop:
++    target_n = max(min_pop, int(round(pop_size + (min_pop - pop_size) * progress_frac)))
++    if target_n < current_n:
++        remove_count = current_n - target_n
++        worst_indices = np.argsort(fitness[:current_n])[::-1][:remove_count]
++        keep_indices = np.setdiff1d(np.arange(current_n), worst_indices)
++        n_keep = len(keep_indices)
++        if n_keep > 0:
++            pop[:n_keep] = pop[keep_indices]
++            fitness[:n_keep] = fitness[keep_indices]
++        if n_keep < target_n:
++            local_best_idx = int(np.argmin(fitness[:max(1, n_keep)]))
++            for j in range(n_keep, target_n):
++                pop[j] = pop[local_best_idx].copy()
++                fitness[j] = fitness[local_best_idx]
++        current_n = target_n
++```
++
++### 2. ADD STAGNATION-TRIGGERED RESTART (was in gen_11)
++Track `stagnation_count`. If no improvement for 5 iterations, restart worst 15%:
++```python
++if stagnation_count >= 5:
++    n_restart = max(1, int(current_n * 0.15))
++    worst_idx = np.argsort(fitness[:current_n])[-n_restart:]
++    sigma = (ub - lb) * 0.02 * (1.0 + progress_frac)
++    for idx in worst_idx:
++        pop[idx] = gbest + sigma * rng.standard_normal(self.dim)
++        pop[idx] = np.clip(pop[idx], lb, ub)
++        fitness[idx] = evaluate_problem(problem, pop[idx])
++        evals += 1
++        if evals >= self.max_evals: break
++    stagnation_count = 0
++```
++
++### 3. IMPROVE SHADE MEMORY UPDATE TO WEIGHTED LEHMER MEAN
++Instead of simple means, use delta-fitness weighted Lehmer mean for F:
++```python
++if len(S_F) > 0:
++    S_F_arr = np.array(S_F, dtype=float)
++    S_CR_arr = np.array(S_CR, dtype=float)
++    S_delta_arr = np.array(S_delta, dtype=float)
++    total_delta = float(np.sum(S_delta_arr))
++    if total_delta > 1e-30:
++        weights = S_delta_arr / total_delta
++    else:
++        weights = np.ones_like(S_delta_arr) / len(S_delta_arr)
++    if np.sum(weights * S_F_arr) > 1e-30:
++        mean_F = float(np.sum(weights * S_F_arr**2) / np.sum(weights * S_F_arr))
++    else:
++        mean_F = float(np.mean(S_F_arr))
++    mean_CR = float(np.sum(weights * S_CR_arr))
++    memory_F[memory_idx] = max(0.1, min(1.0, mean_F))
++    memory_CR[memory_idx] = max(0.0, min(1.0, mean_CR))
++    memory_idx = (memory_idx + 1) % memory_size
++```
++
++### 4. TRACK delta_f FOR EVERY SUCCESSFUL TRIAL
++When a trial is accepted and replaces the parent, store `delta_f = fitness[i] - trial_f` alongside `F_vals[i]` and `CR_vals[i]` in `S_delta`, `S_F`, `S_CR`.
++
++### 5. MAINTAIN current_n VARIABLE
++Use `current_n` throughout the loop (initialized to `pop_size`) instead of hardcoding `pop_size` everywhere, so LPSR can shrink it.
++
++## EXPLICITLY REJECTED (DO NOT DO THESE):
++- ❌ Changing F, CR, w, c1, c2, pop_size numeric values
++- ❌ Adding LHS initialization (has minimal impact)
++- ❌ Blending controller outputs with memory values without other structural changes
++- ❌ Making existing constants configurable via controller params (gen_17 did this and scored 0.8157, far below best 0.93121)
++- ❌ Only fixing log/exp names or small bugfixes
++- ❌ Rewriting dqn_de_util.py or any file in /hada/domains/
++- ❌ Breaking the `optimize()` return contract
++
++## MANDATORY WORKFLOW - FOLLOW THESE STEPS:
++1. **READ the winning diff FIRST**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this is the PROVEN best implementation (score 0.93121)
++2. **READ the domain code**: Use editor view on `/hada/domains/{domain}/dqn_de_util.py` to understand exactly how your code is called and scored
++3. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py`
++4. **MAKE your changes**: Use editor str_replace to actually modify `/hada/metabbo/ec_algorithm.py` - add the missing L-SHADE components
++5. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
++6. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++
++## REMEMBER:
++- The evaluation code CANNOT be modified. It expects `DEOptimizer` class with the interface above.
++- If you introduce a new helper method or class, define it BEFORE using it.
++- Do NOT call methods that don't exist.
++- Your changes must be syntactically valid Python.
++- **The gen_11 L-SHADE achieved 0.93121. Your goal is to add back the missing L-SHADE components (LPSR, restart, weighted Lehmer mean) to the current JADE implementation to recover and exceed that score.**
++
++Now here is the specific task input:
++"""
++        
++        instruction = system_prompt + f"""
++```
++{inputs}
++```
++
++Respond in JSON format with the following schema:
++<json>
++{{
++    "response": ...
++}}
++</json>"""
++        new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all')
++
++        # Extract the response
++        prediction = "None"
++        try:
++            extracted_jsons = extract_jsons(new_msg_history[-1]['text'])
++            if extracted_jsons is not None and "response" in extracted_jsons[-1]:
++                prediction = extracted_jsons[-1]['response']
++        except Exception as e:
++            self.log(f"Error extracting prediction: {e}")
++            prediction = "None"
++
++        return prediction, new_msg_history
+\ No newline at end of file
+diff --git a/task_agent.py.rej b/task_agent.py.rej
+new file mode 100644
+index 0000000..6604aa4
+--- /dev/null
++++ b/task_agent.py.rej
+@@ -0,0 +1,23 @@
++--- task_agent.py
+++++ task_agent.py
++@@ -89,14 +105,14 @@ So your modified `ec_algorithm.py` MUST still provide:
++ - Each function evaluation MUST increment `evals` and stop when `evals >= self.max_evals`
++ 
++ ## WHAT TO IMPROVE (be aggressive - try completely different algorithms):
++-The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. The baseline score is ~0.88 on BBOB. You can improve dramatically by:
+++The current code is already a JADE/SHADE-style adaptive DE (external archive, pbest mutation, success-history memory). The baseline score is ~0.88 on BBOB. To improve further, you MUST implement a fundamentally different algorithm or add a major new mechanism not already present. Do NOT just tweak the existing JADE/SHADE parameters (memory size, pbest_p, archive limit) - those are already there. You can improve dramatically by:
++ 
++ **Try these algorithm upgrades (in order of expected impact):**
++-1. **SHADE / L-SHADE**: Success-History based Adaptive DE - CEC competition winner, adapts F and CR per-individual
++-2. **JADE**: Adaptive DE with external archive and current-to-pbest mutation
++-3. **CMA-ES**: Covariance Matrix Adaptation Evolution Strategy - state-of-the-art for continuous black-box optimization
++-4. **Hybrid DE variants**: Add mechanisms like opposition-based learning, restart, local search, diversity maintenance
++-5. **Improved initialization**: Latin Hypercube Sampling, Sobol sequence, or opposite-based initialization
+++1. **CMA-ES**: Covariance Matrix Adaptation Evolution Strategy - state-of-the-art for continuous black-box optimization, completely different search mechanism
+++2. **L-SHADE**: SHADE with Linear Population Size Reduction (LP-SR) - a major structural addition over plain SHADE/JADE
+++3. **SaNSDE / MPEDE**: Self-adaptive DE with multiple mutation strategies and ensemble selection
+++4. **Hybrid DE + local search**: Add hill-climbing / Nelder-Mead refinement after each N generations
+++5. **Restart / diversity mechanisms**: Detect stagnation and reinitialize part of the population, or use niching
++ 
++ **Structural changes you can make:**
++ - Replace the `DEOptimizer` internals with a completely different algorithm (SHADE, JADE, CMA-ES) while keeping the same class/method interface

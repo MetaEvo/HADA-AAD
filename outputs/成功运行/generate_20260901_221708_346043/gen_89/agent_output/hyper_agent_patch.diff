@@ -1,0 +1,13 @@
+diff --git a/task_agent.py b/task_agent.py
+index b46160c..4b0bea7 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -55,7 +55,7 @@ The gen_11 L-SHADE included these critical components:
+ 
+ ## CURRENT STATE OF ec_algorithm.py (WHAT TO IMPROVE ON):
+ The current file already has a **partial JADE implementation** with archive and current-to-pbest/1, but it is **MISSING several key L-SHADE components** that the gen_11 winner used:
+-- ❌ **NO Linear Population Size Reduction (LPSR)** - the population stays at fixed size the whole run. This was important in gen_11.
++- ✅ **HAS Linear Population Size Reduction (LPSR)** - added in gen_81, do NOT retune.
+ - ❌ **NO stagnation restart** - when the population converges, there is no mechanism to reinitialize worst individuals near the best. This was in gen_11.
+ - ✅ HAS external archive (JADE-style)
+ - ✅ HAS current-to-pbest/1 mutation

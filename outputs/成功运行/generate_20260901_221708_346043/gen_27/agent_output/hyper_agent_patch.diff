@@ -1,0 +1,266 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 6b123ae..5fa56a2 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -135,14 +135,14 @@ You MUST inspect the latest `all_patch.diff` to determine whether the Tas
+ - ❌ Patch only adds stagnation restart of worst individuals
+ - ❌ Patch only blends controller outputs with memory values
+ - ❌ Patch only fixes log/exp names, or adds helper functions that aren't called
++- ❌ **Patch keeps DE/SHADE/JADE family internals** (F, CR, mutation/crossover operators, memory_F, archive, pbest_p, Lehmer means, current-to-pbest/1, etc.)
+ 
+-### ACCEPTABLE STRUCTURAL CHANGES IN `ec_algorithm.py`:
+-- ✅ Different mutation strategy: `current-to-pbest/1`, `best/1`, `best/2`, `current-to-rand/1`
+-- ✅ Different crossover: exponential, eigenvector-based, or removed crossover
+-- ✅ Different selection: `(mu+lambda)`, elitist with archive
+-- ✅ New optimizer class: `CMAESOptimizer`, `GLPSO`, `SHADE`, `JADE`, `L-SHADE`
++### ACCEPTABLE STRUCTURAL CHANGES IN `ec_algorithm.py` (ALGORITHM FAMILY SWITCH):
++- ✅ **COMPLETE family switch**: Implement CMA-ES (mean/covariance/paths), GLPSO (global-local exemplars), or ES (mu+lambda) to REPLACE the DE-family internals
++- ✅ Same `DEOptimizer` class name but with entirely different search logic (no DE mutation/crossover/F/CR)
+ - ✅ New mechanisms: archive, migration, linear population size reduction, restart with reinitialization
+-- ✅ Success-history parameter adaptation (Lehmer mean, memory of F/CR)
++- ✅ Success-history parameter adaptation (Lehmer mean, memory of F/CR) - ONLY if part of a larger family switch to a non-DE algorithm
++- ❌ Just changing mutation strategy (`current-to-pbest/1`, `best/1`, `best/2`) within DE/SHADE/JADE is NO LONGER ACCEPTABLE
+ 
+ ## WHAT TO DO IF THE TASK AGENT IS STILL MAKING PARAMETER TWEAKS:
+ If you detect any of the red flags above, you MUST fix `task_agent.py` by:
+diff --git a/task_agent.py b/task_agent.py
+index 2f87696..e8e7ef5 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -28,67 +28,136 @@ class TaskAgent(AgentSystem):
+         domain = inputs['domain']
+         instruction = f"""You are an expert optimization algorithm researcher improving code for the {domain} domain.
+ 
+-## YOUR #1 PRIORITY: CHANGE THE ACTUAL SEARCH OPERATOR
+-Modify `/hada/metabbo/ec_algorithm.py` to make a STRUCTURAL change to the evolutionary algorithm.
+-Parameter tweaks (F, CR, w, c1, c2, pop_size, LHS init, restart thresholds, boundary handling) have caused scores to PLATEAU for 20+ generations. **Your change will be REJECTED if it is only a parameter tweak.**
++## YOUR #1 PRIORITY: SWITCH THE ALGORITHM FAMILY
++Modify `/hada/metabbo/ec_algorithm.py` to implement a **DIFFERENT ALGORITHM FAMILY** than the current DE/SHADE/JADE lineage.
++
++⚠️⚠️⚠️ **CRITICAL CONTEXT**: The last 25 generations have ALL been DE-family variations (DE -> SHADE -> JADE -> SHADE-with-strategy-selection). Scores have PLATEAUED around 0.91 for 20+ generations. **Your change will be REJECTED if it is another DE/SHADE/JADE refinement.**
++
++## ALGORITHM FAMILY ROTATION REQUIREMENT:
++- Current family: **DE/SHADE/JADE** (mutation + crossover + survivor selection)
++- You MUST switch to a **DIFFERENT family**. Recommended for bbob_unconstrained:
++  1. **CMA-ES** (covariance matrix adaptation) - the #1 recommendation
++  2. **GLPSO** (global-local particle swarm with multiple learning exemplars)
++  3. **Evolution Strategies (ES)** with (mu+lambda) selection
++
++Your FIRST line of your final JSON response MUST state: "Switched algorithm family from X to Y."
+ 
+ ## EXPLICITLY REJECTED (DO NOT DO THESE):
+-- ❌ Changing F, CR, w, c1, c2, pop_size values
+-- ❌ Adding LHS initialization
+-- ❌ Adding stagnation restart of worst individuals
++- ❌ ANY DE-family change: F, CR, mutation operator, crossover operator, SHADE memory, JADE archive, current-to-pbest/1, pbest_p, Lehmer means, etc.
++- ❌ Changing w, c1, c2, pop_size values in a PSO
++- ❌ Adding LHS initialization, stagnation restart, boundary handling tweaks
+ - ❌ Blending controller outputs with memory values
+ - ❌ Fixing log/exp names
+-- ❌ Adding boundary handling tweaks
+-- ❌ Increasing SHADE memory size or tweaking pbest_p
+ - ❌ Rewriting dqn_de_util.py or any file in /hada/domains/
+ - ❌ Breaking the `optimize()` return contract
+-
+-## ACCEPTED STRUCTURAL CHANGES (implement at least one):
+-1. **Replace mutation operator**: change `rand/1` to `current-to-pbest/1` (JADE/SHADE), `best/1`, `best/2`, `current-to-rand/1`, or `current-to-best/1`.
+-2. **Replace crossover**: use exponential crossover, eigenvector-based crossover, or remove crossover entirely.
+-3. **Implement a new optimizer class**: add `CMAESOptimizer` or `GLPSO` and alias `DEOptimizer = CMAESOptimizer` at the bottom of the file.
+-4. **Add JADE archive**: maintain an external archive of inferior solutions and use it in mutation.
+-5. **Implement success-history parameter adaptation (SHADE)**: store F/CR in memory, sample per-individual, update via Lehmer means.
+-6. **Linear Population Size Reduction (LPSR)**: shrink population size as evaluation budget is consumed.
+-
+-## CONCRETE CODE EXAMPLE (JADE current-to-pbest/1):
++- ❌ Keeping DEOptimizer as the class and only changing internals to another DE variant
++- ❌ The class may keep the name `DEOptimizer` but must NOT use DE/SHADE/JADE logic internally
++
++## ACCEPTED STRUCTURAL CHANGES (implement the ENTIRE algorithm, not one operator):
++1. **CMA-ES** (implement a compact version):
++   - Maintain mean vector `m`, covariance matrix `C`, step-size `sigma`, evolution paths `pc`, `ps`
++   - Sample new population: `x_k = m + sigma * (C^(1/2) @ z_k)`
++   - Select top `mu` solutions, update mean: `m_new = sum(w_i * x_i)`
++   - Update paths and covariance with learning rates `c1`, `cmu`, `cs`, `damps`
++2. **GLPSO** (Global-Local Particle Swarm):
++   - Each particle has position `x`, velocity `v`, personal best `pbest`, local best `lbest`, global learning exemplar `G`, local learning exemplar `L`
++   - Velocity update: `v = w*v + c1*r1*(G - x) + c2*r2*(L - x)`
++   - `G` is a global exemplar selected via tournament from pbest pool; `L` is from neighborhood
++3. **ES with (mu+lambda)** selection:
++   - Parent population `mu`, offspring `lambda`, isotropic Gaussian mutation with self-adaptive step-size
++   - Select top `mu` from combined pool
++
++## CONCRETE CODE EXAMPLE (CMA-ES skeleton):
+ ```python
+-# Inside the optimization loop, replace the mutation block:
+-# 1. Sort population by fitness to get pbest pool
+-order = np.argsort(fitness)
+-pbest_count = max(1, int(0.15 * pop_size))
+-pbest_pool = order[:pbest_count]
+-
+-# 2. For each individual i generate a trial:
+-for i in range(pop_size):
+-    # pbest individual
+-    pbest_i = pbest_pool[rng.randint(0, pbest_count)]
+-    x_pbest = pop[pbest_i]
+-    
+-    # r1: random from pop, != i
+-    r1 = rng.randint(pop_size)
+-    while r1 == i:
+-        r1 = rng.randint(pop_size)
+-    
+-    # r2: from archive (50% chance) or pop, != i and != r1
+-    if len(archive) > 0 and rng.random() < 0.5:
+-        r2 = archive[rng.randint(len(archive))]
+-    else:
+-        r2_idx = rng.randint(pop_size)
+-        while r2_idx == i or r2_idx == r1:
+-            r2_idx = rng.randint(pop_size)
+-        r2 = pop[r2_idx]
+-    
+-    # current-to-pbest/1 mutation
+-    mutant = pop[i] + F_i[i] * (x_pbest - pop[i]) + F_i[i] * (pop[r1] - r2)
+-    
+-    # Binomial crossover (ensure at least one dim from mutant)
+-    j_rand = rng.randint(self.dim)
+-    mask = rng.random(self.dim) < CR_i[i]
+-    mask[j_rand] = True
+-    trial = np.where(mask, mutant, pop[i])
+-    trial = np.clip(trial, lb, ub)
+-    new_pop[i] = trial
++class DEOptimizer:  # keep the class name but implement CMA-ES
++    def __init__(self, dim, lower_bounds, upper_bounds, max_evals, params=None, controller=None, recorder=None, swarm_size=None):
++        # ... same constructor signature ...
++        self.pop_size = swarm_size if swarm_size is not None else max(12, 4 + int(3 * np.log(self.dim)))
++        self.sigma0 = 0.3 * (self.upper_bounds - self.lower_bounds)
++        
++    def optimize(self, problem, x0=None, train=True, seed=None):
++        lb, ub = self.lower_bounds, self.upper_bounds
++        rng = np.random.RandomState(seed if seed is not None else _config_seed)
++        
++        # Initialize CMA-ES state
++        m = rng.uniform(lb, ub) if x0 is None else np.clip(np.asarray(x0, float), lb, ub)
++        sigma = 0.3 * (ub - lb)
++        C = np.eye(self.dim)
++        pc = np.zeros(self.dim)
++        ps = np.zeros(self.dim)
++        
++        # Strategy parameters (CMA-ES defaults)
++        mu = self.pop_size // 2
++        weights = np.log(mu + 0.5) - np.log(np.arange(1, mu + 1))
++        weights /= weights.sum()
++        mueff = 1.0 / np.sum(weights**2)
++        cc = (4 + mueff / self.dim) / (self.dim + 4 + 2 * mueff / self.dim)
++        cs = (mueff + 2) / (self.dim + mueff + 5)
++        c1 = 2 / ((self.dim + 1.3)**2 + mueff)
++        cmu = min(1 - c1, 2 * (mueff - 2 + 1/mueff) / ((self.dim + 2)**2 + mueff))
++        damps = 1 + 2 * max(0, np.sqrt((mueff - 1) / (self.dim + 1)) - 1) + cs
++        chiN = np.sqrt(self.dim) * (1 - 1/(4*self.dim) + 1/(21*self.dim**2))
++        
++        evals = 0
++        gbest = m.copy()
++        gbest_f = np.inf
++        iterations = 0
++        
++        while evals < self.max_evals:
++            iterations += 1
++            # Sample population
++            B, D, _ = np.linalg.svd(C)
++            BD = B @ np.diag(np.sqrt(D))
++            pop = np.array([m + sigma * (BD @ rng.randn(self.dim)) for _ in range(self.pop_size)])
++            pop = np.clip(pop, lb, ub)
++            
++            # Evaluate
++            fitness = np.array([evaluate_problem(problem, x) for x in pop])
++            evals += len(pop)
++            
++            # Track best
++            best_cur = int(np.argmin(fitness))
++            if fitness[best_cur] < gbest_f:
++                gbest_f = fitness[best_cur]
++                gbest = pop[best_cur].copy()
++            
++            if len(fitness) == 0:
++                break
++            
++            # Selection and recombination
++            idx = np.argsort(fitness)[:mu]
++            m_old = m.copy()
++            m = np.dot(weights, pop[idx])
++            
++            # Evolution path updates (active CMA-ES style)
++            y = (m - m_old) / sigma
++            ps = (1 - cs) * ps + np.sqrt(cs * (2 - cs) * mueff) * (np.linalg.solve(np.linalg.cholesky(C).T, y) if self.dim > 1 else y)
++            hsig = float(np.linalg.norm(ps) / np.sqrt(1 - (1 - cs)**(2 * evals / self.pop_size)) / chiN < 1.4 + 2/(self.dim+1))
++            pc = (1 - cc) * pc + hsig * np.sqrt(cc * (2 - cc) * mueff) * y
++            
++            # Covariance matrix update
++            C = (1 + c1*(1-hsig) - c1 - cmu) * C \
++                + c1 * np.outer(pc, pc) \
++                + cmu * sum(w * np.outer(pop[idx[i]] - m_old, pop[idx[i]] - m_old) / sigma**2 for i, w in enumerate(weights))
++            C = (C + C.T) / 2
++            
++            # Step-size update
++            ps_norm = np.linalg.norm(ps)
++            sigma = sigma * np.exp((cs / damps) * (ps_norm / chiN - 1))
++            sigma = max(1e-8, min(1e8, sigma))
++            
++            # Controller call (optional, keep interface)
++            if self.controller is not None:
++                obs = {'iteration': iterations, 'evals': evals, 'gbest_f': gbest_f, 'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
++                step_params = self.controller.step(obs) or {}
++                if isinstance(step_params, dict) and 'sigma' in step_params:
++                    sigma = float(step_params['sigma'])
++        
++        stats = {
++            'gbest': gbest, 'gbest_f': float(gbest_f), 'evals': int(evals),
++            'iterations': iterations, 'initial_gbest_f': float(initial_gbest_f)
++        }
++        return [gbest], stats
+ ```
+ 
+ ## INTERFACE REQUIREMENTS (CRITICAL - BREAKING THESE GIVES ZERO SCORE):
+@@ -111,21 +180,25 @@ Your class MUST:
+ 3. Check that `evaluate_problem(problem, x)` is defined in ec_algorithm.py; reuse it.
+ 
+ ## INCREMENTAL IMPROVEMENT STRATEGY:
+-- Change ONE functional module this generation (e.g., only the mutation operator OR only add an archive).
+-- Do NOT rewrite the entire file; keep working code intact.
++- This generation is an **ALGORITHM FAMILY SWITCH** (e.g., DE-family -> CMA-ES).
++- Keep the `DEOptimizer` class name but REPLACE the internal loop entirely with the new family.
++- You may delete DE/SHADE/JADE-specific variables (memory_F, memory_CR, archive, F_i, CR_i, pbest_p, etc.) if unused.
++- If implementing CMA-ES, you can simplify: skip the Cholesky solve fallback for dim==1 or guard it for dim > 1 (handle dim==1 separately).
+ - Define any new helper methods BEFORE calling them.
+ - Verify function signatures match their callers.
+ 
+-## SUPPORTED ALGORITHMS FOR {domain}:
+-- **bbob_unconstrained**: DE, JADE, L-SHADE, SHADE, CMA-ES, GLPSO, ES
+-- **bbob_constrained**: C-DE, CMA-ES with constraints, SHADE with feasibility rules
++## SUPPORTED ALGORITHMS FOR {domain} (pick a DIFFERENT family from the current one):
++- **bbob_unconstrained**: CMA-ES (recommended), GLPSO, ES (mu+lambda), Cooperative Coevolution, Biogeography-Based Optimization, etc.
++- **bbob_constrained**: CMA-ES with constrained handling, (1+1)-ES with penalty, etc.
+ - **metabox_mt**: MFEA, MFEA-II, MFEA-DE, MFDE, CMT-DE
+ - **metabox_mo**: NSGA-II, NSGA-III, MOEA/D, SPEA2, SMPSO, IBEA
+ 
+ ## TOOL USE:
+ Use the `editor` tool with command=`str_replace` to modify `/hada/metabbo/ec_algorithm.py`.
+ 
+-## VERIFICATION CHECKLIST BEFORE FINISHING:
++## VERIFICATION CHECKLIST BEFORE FINISHING (ALL MUST BE TRUE):
++- [ ] The class uses a DIFFERENT algorithm family than DE/SHADE/JADE (e.g., CMA-ES, GLPSO, ES)
++- [ ] No DE-family internals remain: no F, CR, mutation/crossover operators, SHADE memory, JADE archive, pbest indices, or Lehmer means
+ - [ ] All method/function calls reference existing code
+ - [ ] The class can be instantiated with `DEOptimizer(dim, lower, upper, max_evals, params, controller, recorder, swarm_size)`
+ - [ ] `optimize()` returns `(gbest_list, stats_dict)` with required keys
+@@ -133,10 +206,11 @@ Use the `editor` tool with command=`str_replace` to modify `/hada/cocoex-
+ - [ ] No undefined variables, methods, or syntax errors
+ 
+ ## FINAL RESPONSE FORMAT:
+-After completing modifications, respond in JSON:
++After completing modifications, respond in JSON. The FIRST LINE of `response` MUST be exactly:
++`Switched algorithm family from DE/SHADE/JADE to <NEW_FAMILY>.`
+ <json>
+ {{
+-    "response": "Concise description of the structural change made and the expected benefit."
++    "response": "Switched algorithm family from DE/SHADE/JADE to <NEW_FAMILY>. <description of the structural change made and expected benefit>"
+ }}
+ </json>
+ 

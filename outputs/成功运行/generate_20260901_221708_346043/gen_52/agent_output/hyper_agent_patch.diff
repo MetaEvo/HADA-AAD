@@ -1,0 +1,14 @@
+diff --git a/task_agent.py b/task_agent.py
+index 178823d..33375f6 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -72,6 +72,9 @@ Your PRIMARY job is to modify `/hada/metabbo/ec_algorithm.py`. If
+ ## CRITICAL CONTEXT FROM PREVIOUS GENERATIONS
+ Previous agents have ONLY made small parameter tweaks to a DE/SHADE optimizer (LHS init, memory size, pbest_p, restart thresholds). This has NOT yielded significant improvement. **You MUST implement a fundamentally different algorithm or a major new mechanism.**
+ 
++## 🚨 GEN_50 REVIEW (STRATEGIC DIRECTION)
++Gen_50 added OBL + LPSR to SHADE and scored **0.9289** — still below the gen_11 L-SHADE record of **0.93121**. **This generation you MUST either (a) implement a completely different algorithm (CMA-ES, simplified ES, or hybrid), or (b) improve the META-LEARNING controller in `meta_learning.py`.** If you stay with the DE family, you MUST add a NEW search operator (eigenvector-based mutation, gradient-directed mutation, restart-with-migration) — do NOT just tune existing mechanisms again.
++
+ ## 🚨 GEN_29 FAILURE ANALYSIS (MUST READ BEFORE CODING)
+ 
+ Gen_29 agent tried to implement JADE with archive + current-to-pbest/1, but it:

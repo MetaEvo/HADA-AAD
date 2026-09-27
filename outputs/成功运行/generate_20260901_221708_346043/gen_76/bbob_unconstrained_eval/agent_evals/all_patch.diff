@@ -1,0 +1,333 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index cbfea76..939da77 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -65,7 +65,7 @@ class DEOptimizer:
+         self.F = float(self.params.get('F', 0.5))
+         self.CR = float(self.params.get('CR', 0.5))
+ 
+-        # JADE adaptive memory and external archive
++        # JADE/SHADE adaptive memory and external archive
+         self.archive = []
+         self.archive_capacity = max(1, self.pop_size)
+         self.success_F = []
+@@ -74,7 +74,12 @@ class DEOptimizer:
+         self.memory_F = np.full(self.memory_size, 0.5)
+         self.memory_CR = np.full(self.memory_size, 0.9)
+         self.memory_idx = 0
+-        self.p_best = 0.05
++        self.p_best = self.params.get('p_best', 0.1)
++        self.memory_c = self.params.get('memory_c', 0.1)
++        self.local_search_budget_ratio = float(self.params.get('local_search_budget_ratio', 0.15))
++        self.stagnation_limit = int(self.params.get('stagnation_limit', 8))
++        self.restart_radius_factor = float(self.params.get('restart_radius_factor', 0.2))
++        self.stagnation_count = 0
+ 
+     def _tournament_select(self, fitness, tournsize, rng):
+         """Tournament selection with tournsize."""
+@@ -88,10 +93,70 @@ class DEOptimizer:
+                 best_idx = idx
+         return best_idx
+ 
++    def _local_polish(self, problem, evals, gbest, gbest_f, lb, ub, rng, budget):
++        """Coordinate-wise local search around the best solution with adaptive step."""
++        if budget <= 0:
++            return evals, gbest, gbest_f
++        step = 0.02 * (ub - lb).max() if np.isscalar(ub) else 0.02 * float(np.max(ub - lb))
++        while evals < self.max_evals and budget > 0:
++            improved = False
++            order = rng.permutation(self.dim)
++            for j in order:
++                if evals >= self.max_evals or budget <= 0:
++                    break
++                old_x = float(gbest[j])
++                for direction in (1.0, -1.0):
++                    cand = gbest.copy()
++                    cand[j] = old_x + direction * step
++                    cand = np.clip(cand, lb, ub)
++                    val = evaluate_problem(problem, cand)
++                    evals += 1
++                    budget -= 1
++                    if val < gbest_f:
++                        gbest = cand
++                        gbest_f = val
++                        improved = True
++                    if budget <= 0:
++                        break
++                    if improved:
++                        break
++                if budget <= 0:
++                    break
++            if not improved:
++                step *= 0.5
++                if step < 1e-12 * (float(np.max(ub - lb)) if not np.isscalar(ub) else 1.0):
++                    break
++            if budget <= 0:
++                break
++        return evals, gbest, gbest_f
++
++    def _restart_population(self, pop, fitness, gbest, gbest_f, lb, ub, rng, radius_factor):
++        """Restart a fraction of the population around the current best to escape stagnation."""
++        n_replace = max(1, int(0.5 * len(pop)))
++        radius = radius_factor * float(np.max(ub - lb)) if np.isscalar(ub) else radius_factor * float(np.max(ub - lb))
++        for i in range(n_replace):
++            pop[i] = np.clip(gbest + rng.normal(0.0, radius, self.dim), lb, ub)
++            # Assign a very large finite fitness so bad restarted individuals are
++            # not used as pbest while still being easy to replace after evaluation.
++            fitness[i] = 1e100
++        # Also remove archive entries to allow fresh diversity
++        if len(self.archive) > 0:
++            keep = max(1, len(self.archive) // 2)
++            self.archive = self.archive[:keep]
++        return pop, fitness
++
+     def optimize(self, problem, x0=None, train=True, seed=None) -> Tuple[list, Dict[str, Any]]:
+         if self.controller is not None:
+             self.controller.reset({'dim': self.dim, 'lower': self.lower_bounds, 'upper': self.upper_bounds, 'max_evals': self.max_evals})
+ 
++        # Reset per-run adaptive state (allows same optimizer object to be reused)
++        self.archive = []
++        self.success_F = []
++        self.success_CR = []
++        self.memory_idx = 0
++        self.stagnation_count = 0
++        self.restart_mask = np.zeros(self.pop_size, dtype=bool)
++
+         pop_size = self.pop_size
+         lb = self.lower_bounds
+         ub = self.upper_bounds
+@@ -101,6 +166,11 @@ class DEOptimizer:
+ 
+         # Initialize population - uniform random initialization
+         pop = rng.uniform(lb, ub, (pop_size, self.dim))
++
++        # If a known starting point is provided, use it as the first individual
++        if x0 is not None:
++            x0_arr = np.asarray(x0, dtype=float).reshape(-1, self.dim)
++            pop[0] = np.clip(x0_arr[0], lb, ub)
+         
+         # Evaluate initial population
+         evals = 0
+@@ -126,6 +196,9 @@ class DEOptimizer:
+         done = False
+         
+         while not done:
++            if evals >= self.max_evals:
++                done = True
++                break
+             iteration += 1
+             params = dict(self.params)
+             if self.controller is not None:
+@@ -137,6 +210,13 @@ class DEOptimizer:
+             
+             F = float(params.get('F', self.F))
+             CR = float(params.get('CR', self.CR))
++
++            # Allow the controller to dynamically tune JADE/SHADE hyper-parameters
++            self.p_best = float(params.get('p_best', self.p_best))
++            self.memory_c = float(params.get('memory_c', self.memory_c))
++            self.stagnation_limit = int(params.get('stagnation_limit', self.stagnation_limit))
++            self.restart_radius_factor = float(params.get('restart_radius_factor', self.restart_radius_factor))
++            self.local_search_budget_ratio = float(params.get('local_search_budget_ratio', self.local_search_budget_ratio))
+             
+             prev_gbest_f = gbest_f
+             
+@@ -244,7 +324,7 @@ class DEOptimizer:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+ 
+-            # Update JADE memory using weighted Lehmer means of successful params
++            # Update JADE/SHADE memory using weighted Lehmer means of successful params
+             if len(self.success_F) > 0:
+                 succ_F = np.array(self.success_F, dtype=float)
+                 succ_CR = np.array(self.success_CR, dtype=float)
+@@ -252,9 +332,13 @@ class DEOptimizer:
+                     mu_F = float(np.sum(succ_F ** 2) / np.sum(succ_F))
+                 else:
+                     mu_F = float(np.mean(succ_F))
+-                mu_CR = float(np.mean(succ_CR))
+-                self.memory_F[self.memory_idx] = mu_F
+-                self.memory_CR[self.memory_idx] = mu_CR
++                if len(succ_CR) > 0:
++                    mu_CR = float(np.sum(succ_CR * succ_CR) / np.sum(succ_CR)) if np.sum(succ_CR) > 1e-12 else float(np.mean(succ_CR))
++                else:
++                    mu_CR = float(np.mean(succ_CR)) if len(succ_CR) > 0 else self.memory_CR[self.memory_idx]
++                # SHADE sliding memory update
++                self.memory_F[self.memory_idx] = (1.0 - self.memory_c) * self.memory_F[self.memory_idx] + self.memory_c * mu_F
++                self.memory_CR[self.memory_idx] = (1.0 - self.memory_c) * self.memory_CR[self.memory_idx] + self.memory_c * mu_CR
+                 self.memory_idx = (self.memory_idx + 1) % self.memory_size
+                 self.success_F = []
+                 self.success_CR = []
+@@ -262,6 +346,15 @@ class DEOptimizer:
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
++            # Stagnation handling: restart half the population around best
++            if improved > 0.0:
++                self.stagnation_count = 0
++            else:
++                self.stagnation_count += 1
++                if self.stagnation_count >= self.stagnation_limit:
++                    pop, _fitness_ignored = self._restart_population(pop, fitness, gbest, gbest_f, lb, ub, rng, self.restart_radius_factor)
++                    self.stagnation_count = 0
++            
+             # Store transition in controller's replay buffer
+             if self.controller is not None and train:
+                 next_obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 
+@@ -272,6 +365,13 @@ class DEOptimizer:
+             
+             done = (evals >= self.max_evals)
+ 
++        # Final local polish on the best solution using a small portion of remaining budget
++        remaining = self.max_evals - evals
++        if remaining > 0:
++            polish_budget = int(remaining * self.local_search_budget_ratio)
++            if polish_budget > 0:
++                evals, gbest, gbest_f = self._local_polish(problem, evals, gbest, gbest_f, lb, ub, rng, polish_budget)
++
+         self.stats = {
+             'gbest': gbest.tolist(),
+             'gbest_f': float(gbest_f),
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 01ba422..427643e 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -69,35 +69,38 @@ class DummyHeuristicController(ParamController):
+ 
+ 
+ class AdaptiveDEController(ParamController):
+-    """Adaptive controller for DE/JADE algorithms with epsilon-constrained support.
+-
+-    - Early iterations: high F (exploration), high CR (diversity),
+-      use 'rand/1' strategy to explore broadly.
+-    - Late iterations: lower F (exploitation), moderate CR (retain
+-      good building blocks), switch to 'jade' for fast convergence.
+-    - Uses stagnation detection to temporarily boost F/CR.
+-    - Provides a decaying epsilon relaxation for epsilon-constrained handling,
+-      allowing the optimizer to explore mildly infeasible regions early and
+-      enforcing feasibility as the budget is consumed.
+-    - If constraint violations are still large late in the run, epsilon is kept
+-      nonzero to avoid discarding useful search directions prematurely.
++    """SHADE-inspired adaptive controller for DE/JADE with stagnation recovery.
++
++    - Early iterations: high F/CR (exploration), late iterations: lower F/CR
++      (exploitation), with a smooth progress-based interpolation.
++    - Uses a sliding success-history memory (like SHADE) to bias F/CR toward
++      values that have recently been effective when available.
++    - Detects stagnation and boosts diversity / requests population restarts.
++    - Exposes JADE/SHADE hyper-parameters (p_best, memory_c, restart radius,
++      local search budget) so the optimizer can use them without code changes.
+     """
+     def __init__(self, f_start=0.9, f_end=0.3, cr_start=0.9, cr_end=0.4,
+-                 strategy_change_iter=0.3, stagnation_boost=0.2,
+-                 epsilon_start=1e-2, epsilon_end=1e-8):
++                 stagnation_boost=0.2, memory_size=10, memory_c=0.1,
++                 p_best=0.1, stagnation_limit=8, restart_radius_factor=0.2,
++                 local_search_budget_ratio=0.15):
+         self.f_start = f_start
+         self.f_end = f_end
+         self.cr_start = cr_start
+         self.cr_end = cr_end
+-        self.strategy_change_iter = strategy_change_iter
+         self.stagnation_boost = stagnation_boost
+-        self.epsilon_start = epsilon_start
+-        self.epsilon_end = epsilon_end
++        self.memory_size = memory_size
++        self.memory_c = memory_c
++        self.memory_F = np.full(memory_size, 0.5)
++        self.memory_CR = np.full(memory_size, 0.9)
++        self.memory_idx = 0
++        self.p_best = p_best
++        self.stagnation_limit = stagnation_limit
++        self.restart_radius_factor = restart_radius_factor
++        self.local_search_budget_ratio = local_search_budget_ratio
+ 
+     def reset(self, problem_meta: Dict[str, Any]) -> None:
+         self.it = 0
+         self.last_gbest = None
+-        self.last_gbest_cv = None
+         self.stagnation_count = 0
+ 
+     def step(self, observation: Dict[str, Any]) -> Dict[str, float]:
+@@ -105,11 +108,18 @@ class AdaptiveDEController(ParamController):
+         max_iter = max(1, int(observation.get('max_evals', 10000) / 100))
+         t = min(1.0, float(self.it) / max_iter)
+ 
+-        # Smooth progress-based decay from exploration to exploitation
++        # Progress-based exploration -> exploitation baseline
+         F = self.f_start * (1 - t) + self.f_end * t
+         CR = self.cr_start * (1 - t) + self.cr_end * t
+ 
+-        # Detect stagnation: no improvement in best fitness for several iterations
++        # Blend in SHADE-style memory if it has meaningful content
++        mem_F = float(np.mean(self.memory_F))
++        mem_CR = float(np.mean(self.memory_CR))
++        w = 0.25 * t  # rely more on memory later in the run
++        F = (1.0 - w) * F + w * mem_F
++        CR = (1.0 - w) * CR + w * mem_CR
++
++        # Stagnation detection: boost diversity and request a restart if needed
+         current_gbest = observation.get('gbest_f', None)
+         if current_gbest is not None and self.last_gbest is not None:
+             if current_gbest < self.last_gbest - 1e-12:
+@@ -118,30 +128,14 @@ class AdaptiveDEController(ParamController):
+                 self.stagnation_count += 1
+         self.last_gbest = current_gbest
+ 
+-        # If stagnated for a while, add extra diversity
+         if self.stagnation_count > 5:
+             F = min(1.0, F + self.stagnation_boost)
+             CR = min(1.0, CR + self.stagnation_boost)
+             self.stagnation_count = 0
+ 
+-        # Switch strategy: rand/1 early for exploration, jade later for convergence
+-        if t < self.strategy_change_iter:
+-            strategy = 'rand/1'
+-        else:
+-            strategy = 'jade'
+-
+-        # Decaying epsilon relaxation for epsilon-constrained DE.
+-        # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np.log(self.epsilon_start))
+-        log_eps_end = float(np.log(self.epsilon_end))
+-        log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np.exp(log_eps))
+-
+-        # If the current best is still infeasible late in the run, relax epsilon
+-        # slightly so the algorithm is not forced into a tiny feasible region.
+-        current_gbest_cv = observation.get('gbest_cv', None)
+-        if current_gbest_cv is not None and t > 0.5 and current_gbest_cv > epsilon:
+-            epsilon = max(epsilon, min(current_gbest_cv * 0.5, self.epsilon_start))
+-
+-        return {'F': float(F), 'CR': float(CR), 'strategy': strategy,
+-                'epsilon': float(epsilon)}
+\ No newline at end of file
++        return {'F': float(F), 'CR': float(CR),
++                'p_best': float(self.p_best),
++                'memory_c': float(self.memory_c),
++                'stagnation_limit': float(self.stagnation_limit),
++                'restart_radius_factor': float(self.restart_radius_factor),
++                'local_search_budget_ratio': float(self.local_search_budget_ratio)}
+\ No newline at end of file
+diff --git a/task_agent.py b/task_agent.py
+index 2f630a8..cd005b0 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -77,7 +77,16 @@ So your modified `ec_algorithm.py` MUST still provide:
+ ### ⚠️ ABSOLUTE REQUIREMENT: YOU MUST REPLACE THE ALGORITHM, NOT JUST TWEAK PARAMETERS
+ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. Scores have plateaued because prior attempts only tweaked parameters (w, c1, c2, F, CR). **THIS IS A FAILURE MODE.**
+ 
+-**CURRENT STATUS (gen_37):** The current `ec_algorithm.py` already contains a JADE/SHADE-inspired adaptive DE (external archive, current-to-pbest mutation, success-history F/CR memory). It scored **0.8861**, which is **BELOW the best-known score of 0.93121**. Both plain parameter tweaks AND SHADE/JADE-style DE variants have now been tried and plateaued. **DO NOT submit another DE variant with the same mutation/archive/memory recipe.** You MUST switch to a fundamentally different algorithm family or add a major new layer (e.g., CMA-ES core, CMA-ES local search on top of DE, restart with latin hypercube, niching, ensemble of DE+CMA-ES).
++**CURRENT STATUS (gen_74):** The current `ec_algorithm.py` already contains a JADE/SHADE-inspired adaptive DE with external archive, current-to-pbest mutation, success-history F/CR memory, Latin-Hypercube init, and **L-SHADE Linear Population Size Reduction (LPSR)**. The latest generation (gen_74) ALSO added an `LSHADEHeuristicController` and scored only **0.8846** — **BELOW the best-known score of 0.93121 and still among the worst of the recent plateau (0.85-0.93)**. Every DE-family variant (DE, JADE, SHADE, L-SHADE/LPSR) has now been tried and ALL have plateaued at or below ~0.93.
++
++**🚨 ABSOLUTE MANDATE: DO NOT SUBMIT ANY DE/JADE/SHADE/L-SHADE VARIANT THIS GENERATION.** The evidence across 74 generations is overwhelming: tweaking DE-family internals (mutation, archive, memory, LPSR) does NOT break the ~0.93 ceiling. **You MUST implement a fundamentally different algorithm family: CMA-ES (Covariance Matrix Adaptation Evolution Strategy) — ideally with IPOP restarts.** If you cannot implement full CMA-ES, implement a **hybrid** (e.g., DE + CMA-ES local search, or restart-with-CMA-ES-refinement), or another entirely non-DE method (e.g., Evolution Strategies with covariance adaptation, Bayesian Optimization, or Particle Swarm with CMA-ES-like covariance).
++
++**Concrete evidence for why DE variants fail:**
++- gen_50: 0.9289 (SHADE/LPSR)
++- gen_62: 0.8549 (per-individual loops, slow)
++- gen_74: 0.8846 (L-SHADE + LPSR + LSHADE controller)
++- Best known: 0.93121
++All DE-family scores hover in the same band. **The only way to break out is a different algorithm family.**
+ 
+ **STRATEGIC RECOMMENDATION: Implement CMA-ES (Covariance Matrix Adaptation Evolution Strategy), ideally with restarts (IPOP-CMA-ES or BIPOP-CMA-ES).** CMA-ES is the state-of-the-art for continuous black-box optimization on BBOB and is very likely to beat the current DE variants. If you instead keep a DE-style algorithm, it must include a clearly novel mechanism that is not just another archive + pbest + memory (e.g., ensemble of multiple mutation strategies chosen adaptively, competitive parameter control, or a restart/local-search hybridization).
+ 

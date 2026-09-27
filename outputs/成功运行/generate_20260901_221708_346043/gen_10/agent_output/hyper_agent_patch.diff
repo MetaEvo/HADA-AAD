@@ -1,0 +1,158 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index ea8cd0c..472924c 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -57,6 +57,45 @@ WHAT TO ANALYZE (focus on the latest generation):
+ - {eval_path}/gen_N/<domain>_eval/agent_evals/chat_history_task_agent.md - See Task Agent's reasoning
+ - {eval_path}/gen_N/report.json - Evaluation scores
+ 
++## CURRENT STATE OF task_agent.py (already improved):
++The task_agent.py now has a comprehensive built-in instruction that:
++1. **MANDATES structural algorithm changes** (JADE, L-SHADE, CMA-ES, current-to-pbest/1, etc.)
++2. **Explicitly REJECTS** parameter tweaks (F, CR, w, c1, c2, LHS, restart, etc.)
++3. **Points to the correct file** `/hada/metabbo/ec_algorithm.py` (not stale pso.py)
++4. **Provides the exact caller contract** from `dqn_de_util.py` so the agent knows the interface it must preserve
++5. **Includes a verification checklist** for code correctness
++
++Your job is to:
++- **Verify the task agent actually follows through** with structural changes by checking the all_patch.diff
++- **Identify if the task agent is still making parameter-only tweaks** and strengthen the prompt further if needed
++- **Check if the task agent is trying completely different algorithms** (DE variants, CMA-ES, etc.) and push for more diversity if not
++- **Fix any issues** in task_agent.py prompt or hyper_agent.py logic that cause the task agent to fail
++
++## CRITICAL VERIFICATION OF TASK AGENT CHANGES:
++When checking `all_patch.diff`, look for these RED FLAGS (task agent failed to do its job):
++- ❌ Patch only changes `task_agent.py` or `hyper_agent.py` (NOT `ec_algorithm.py`)
++- ❌ Patch only changes F, CR, w, c1, c2, pop_size values in ec_algorithm.py
++- ❌ Patch only adds LHS initialization or boundary handling tweaks
++- ❌ Patch only adds stagnation restart of worst individuals
++- ❌ Patch only blends controller outputs with memory values
++- ❌ Patch only fixes log/exp names
++
++If any of these red flags appear, you MUST fix `task_agent.py` to make the instruction even more explicit and forceful about requiring structural algorithm changes in `ec_algorithm.py`.
++
++**The ONLY acceptable changes to `ec_algorithm.py` are:**
++- ✅ New mutation strategies (current-to-pbest/1, best/2, current-to-rand/1)
++- ✅ New crossover types (exponential, eigenvector-based, etc.)
++- ✅ New selection mechanisms ((mu+lambda), elitist with archive)
++- ✅ New optimizer classes (CMA-ES, GLPSO, JADE, L-SHADE, SHADE)
++- ✅ New population structures (archive, migration, restart mechanisms)
++- ✅ New parameter adaptation schemes (Lehmer mean, success-history memory)
++
++Your go-to fixes if the task agent is not making structural changes:
++1. Add an even more explicit "MANDATORY ALGORITHM REPLACEMENT" section to task_agent.py
++2. Add a concrete code example showing how to replace the mutation operator
++3. Make the rejection criteria even more explicit
++4. Add a check that the task agent actually verified its code can run
++
+ CRITICAL REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY: 
+ 
+ 1. **YOU MUST MODIFY CODE FILES** - Use the `editor` tool with command='str_replace' to modify files
+diff --git a/task_agent.py b/task_agent.py
+index 0b1c2f7..d623266 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -25,20 +25,98 @@ class TaskAgent(AgentSystem):
+                 - prediction (str): The prediction made by the agent.
+                 - new_msg_history (list): A list of messages representing the message history of the interaction.
+         """
+-        domain = inputs['domain']
+-        instruction = f"""You are an agent.
++        domain = inputs.get('domain', 'unknown')
++        
++        # Build a comprehensive instruction that OVERRIDES stale task_instruction from the evaluator
++        # The evaluator's task_instruction may reference old file paths (pso.py) - we correct that here.
++        instruction = f"""You are an expert optimization algorithm researcher working on the {domain} domain.
+ 
+-Task input:
++## CRITICAL: YOUR #1 PRIORITY IS TO REPLACE THE SEARCH OPERATOR
++
++The current codebase uses a basic Differential Evolution (DE) `rand/1/bin` implementation in `/hada/metabbo/ec_algorithm.py` (class `DEOptimizer`). 
++Previous agents have ONLY made small parameter tweaks (changing F, CR, w, c1, c2, adding LHS initialization, turbulence, restart) which has caused scores to PLATEAU for 20+ generations.
++
++### YOUR CHANGE WILL BE REJECTED IF YOU ONLY DO ANY OF THESE:
++- ❌ Changing F, CR, w, c1, c2, pop_size values
++- ❌ Adding LHS initialization
++- ❌ Adding stagnation restart of worst individuals
++- ❌ Blending controller outputs with memory values
++- ❌ Fixing log/exp names
++- ❌ Adding boundary handling tweaks
++
++### YOU MUST DO ONE OF THE FOLLOWING (change the actual search operator):
++1. **JADE**: Replace mutation with `current-to-pbest/1` using an archive, adapt F/CR per-individual via Cauchy/Normal sampling with Lehmer mean updates.
++2. **L-SHADE**: Add `current-to-pbest/1` mutation with archive + Linear Population Size Reduction (LPSR).
++3. **CMA-ES**: Add a new `CMAESOptimizer` class and alias `DEOptimizer = CMAESOptimizer` at the bottom so the caller still works.
++4. **DE/current-to-pbest/1 with archive** (JADE-lite): minimal but structural - changes the actual mutation operator.
++5. **Any other structurally different algorithm**: e.g., best/2 mutation, exponential crossover, (mu+lambda) selection, GLPSO, SHADE, etc.
++
++**What counts as "changing the search operator"?**
++- Different mutation strategy (e.g., current-to-pbest/1, best/2, current-to-rand/1)
++- Different crossover (e.g., exponential crossover, eigenvector-based, no crossover)
++- Different selection (e.g., (mu+lambda), elitist with archive)
++- A completely new optimizer class (CMA-ES, GLPSO, etc.)
++
++## FILE TO MODIFY
++- **PRIMARY**: `/hada/metabbo/ec_algorithm.py` - this is the ONLY file you should modify for algorithm changes.
++- Do NOT modify `/hada/domains/` (protected) or `/hada/config.py` (protected).
++
++## BEFORE CODING - READ THESE:
++1. Open `/hada/domains/{domain}/dqn_de_util.py` to see EXACTLY how your optimizer is called:
++   - It creates `ec_mod.DEOptimizer(dim, lower, upper, max_evals, params, controller, recorder, swarm_size)`
++   - It calls `de_opt.optimize(problem, train=mode=='train', seed=seed)`
++   - It expects `stats.get('gbest_f')` and `stats.get('initial_gbest_f')` in the return dict
++   - **CRITICAL**: Your optimizer class MUST accept these constructor args and return this stats dict, or evaluation will crash.
++2. Open `/hada/metabbo/ec_algorithm.py` to see the current `DEOptimizer.optimize()` structure.
++
++## CODE CORRECTNESS REQUIREMENTS (CRITICAL - PREVENTS ZERO SCORE):
++- ✅ All methods/functions you call must exist (e.g., `controller.reset()`, `controller.step(obs)` are called by the DE loop - preserve these calls)
++- ✅ Maintain the `optimize(self, problem, train=True, seed=None)` method signature
++- ✅ Maintain the `stats` dict keys: `gbest`, `gbest_f`, `evals`, `iterations`, `initial_gbest_f`
++- ✅ Increment `evals` for EVERY call to `evaluate_problem()`
++- ✅ Do NOT introduce undefined variables or methods
++- ✅ Verify function signatures match their callers
++- ✅ Make incremental changes that don't break existing functionality
++
++## DOMAIN-SPECIFIC GUIDANCE ({domain}):
++For **bbob_unconstrained**, recommended algorithms: DE variants (JADE, L-SHADE, SHADE), CMA-ES, GLPSO, ES. 
++The controller interface (`param_controller.py`) provides dynamic F/CR - you can keep using it or bypass it, but preserve the `controller` argument.
++
++## TOOLS
++Use the `editor` tool with command=`str_replace` to modify `/hada/metabbo/ec_algorithm.py`.
++Example:
++<json>
++{{
++    "tool_name": "editor",
++    "tool_input": {{
++        "command": "str_replace",
++        "path": "/hada/metabbo/ec_algorithm.py",
++        "old_str": "...existing code...",
++        "new_str": "...new code..."
++    }}
++}}
++</json>
++
++## VERIFICATION CHECKLIST BEFORE YOU FINISH:
++- [ ] All method/function calls reference existing code
++- [ ] No undefined variables or methods
++- [ ] The class can be instantiated with `DEOptimizer(dim, lower, upper, max_evals, params, controller, recorder, swarm_size)`
++- [ ] `optimize()` returns `(gbest_list, stats_dict)` with keys: `gbest`, `gbest_f`, `evals`, `iterations`, `initial_gbest_f`
++- [ ] `evals` is incremented for every `evaluate_problem` call
++- [ ] No syntax errors (check indentation carefully)
++
++## TASK INPUT (from evaluator - NOTE: some file paths in it may be outdated; trust the paths above):
+ ```
+ {inputs}
+ ```
+ 
+-Respond in JSON format with the following schema:
++After completing ALL modifications, respond in JSON format:
+ <json>
+ {{
+-    "response": ...
++    "response": "Brief description of the structural algorithm change you made"
+ }}
+ </json>"""
++
+         new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all')
+ 
+         # Extract the response

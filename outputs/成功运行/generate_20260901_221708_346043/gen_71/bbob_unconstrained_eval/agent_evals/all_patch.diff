@@ -1,0 +1,260 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..69a9ef0 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -64,6 +64,16 @@ class DEOptimizer:
+         self.pop_size = swarm_size if swarm_size is not None else max(10, 5 * self.dim)
+         self.F = float(self.params.get('F', 0.5))
+         self.CR = float(self.params.get('CR', 0.5))
++        # JADE adaptive parameters
++        self.mu_F = float(self.params.get('mu_F', self.F))
++        self.mu_CR = float(self.params.get('mu_CR', self.CR))
++        self.p_best = float(self.params.get('p_best', 0.1))
++        self.archive_rate = float(self.params.get('archive_rate', 1.0))
++        self.memory_size = int(self.params.get('memory_size', 5))
++        self.memory_F = [self.mu_F] * self.memory_size
++        self.memory_CR = [self.mu_CR] * self.memory_size
++        self.memory_pos = 0
++        self.archive = []
+ 
+     def _tournament_select(self, fitness, tournsize, rng):
+         """Tournament selection with tournsize."""
+@@ -77,6 +87,14 @@ class DEOptimizer:
+                 best_idx = idx
+         return best_idx
+ 
++    def rng_cauchy(self, loc, scale, rng):
++        """Sample from a Cauchy distribution using the optimizer's RNG."""
++        return float(rng.standard_cauchy() * scale + loc)
++
++    def rng_normal(self, loc, scale, rng):
++        """Sample from a Normal distribution using the optimizer's RNG."""
++        return float(rng.normal(loc, scale))
++
+     def optimize(self, problem, x0=None, train=True, seed=None) -> Tuple[list, Dict[str, Any]]:
+         if self.controller is not None:
+             self.controller.reset({'dim': self.dim, 'lower': self.lower_bounds, 'upper': self.upper_bounds, 'max_evals': self.max_evals})
+@@ -88,6 +106,9 @@ class DEOptimizer:
+         effective_seed = seed if seed is not None else _config_seed
+         rng = np.random.RandomState(effective_seed)
+ 
++        # Reset archive for a fresh optimization run (JADE archive)
++        self.archive = []
++
+         # Initialize population - uniform random initialization
+         pop = rng.uniform(lb, ub, (pop_size, self.dim))
+         
+@@ -114,6 +135,11 @@ class DEOptimizer:
+         iteration = 0
+         done = False
+         
++        # JADE success/failure memory for adaptation
++        success_F = []
++        success_CR = []
++        stagnation_count = 0
++        
+         while not done:
+             iteration += 1
+             params = dict(self.params)
+@@ -124,33 +150,95 @@ class DEOptimizer:
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+             
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
++            base_F = float(params.get('F', self.F))
++            base_CR = float(params.get('CR', self.CR))
++            
++            # JADE shadow parameters: use controller values as base but allow adaptation
++            use_jade = bool(params.get('use_jade', True))
++            if use_jade:
++                # Sample mutation/crossover factors from adaptive memory (cauchy/normal)
++                F_vals = np.empty(pop_size)
++                CR_vals = np.empty(pop_size)
++                for i in range(pop_size):
++                    # F ~ Cauchy(mu_F, 0.1), resample if out of [0,1]
++                    fi = self.rng_cauchy(self.mu_F, 0.1, rng)
++                    while not (fi > 0.0 and fi <= 1.0):
++                        fi = self.rng_cauchy(self.mu_F, 0.1, rng)
++                    F_vals[i] = fi
++                    # CR ~ Normal(mu_CR, 0.1)
++                    cri = self.rng_normal(self.mu_CR, 0.1, rng)
++                    CR_vals[i] = np.clip(cri, 0.0, 1.0)
++                # Blend with controller-provided base values (if any)
++                if base_F != 0.5 or base_CR != 0.5:
++                    F_vals = 0.7 * F_vals + 0.3 * base_F
++                    CR_vals = 0.7 * CR_vals + 0.3 * base_CR
++            else:
++                F_vals = np.full(pop_size, base_F)
++                CR_vals = np.full(pop_size, base_CR)
+             
+             prev_gbest_f = gbest_f
+             
+-            # Generate trial vectors
++            # Generate trial vectors (JADE/current-to-pbest mutation + binomial crossover)
+             new_pop = np.copy(pop)
++            trial_C = np.empty(pop_size)
++            trial_F = np.empty(pop_size)
++            
++            # Sort by fitness for p-best selection (allow controller to vary p_best)
++            p_best = float(params.get('p_best', self.p_best))
++            pbest_indices = np.argsort(fitness)[:max(1, int(p_best * pop_size))]
++            
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
++                trial_F[i] = F_vals[i]
++                trial_C[i] = CR_vals[i]
++                
++                # Random base vector (a) from population
+                 candidates = [idx for idx in range(pop_size) if idx != i]
+                 if len(candidates) < 3:
+-                    indices = list(range(pop_size))
++                    idx_a, idx_b = rng.choice(pop_size, size=2, replace=False)
++                else:
++                    idx_a, idx_b = rng.choice(candidates, size=2, replace=False)
++                a = pop[idx_a]
++                b = pop[idx_b]
++                
++                # p-best individual
++                if len(pbest_indices) > 0:
++                    pbest_idx = int(pbest_indices[rng.randint(len(pbest_indices))])
++                    pbest = pop[pbest_idx]
+                 else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
++                    pbest = pop[int(np.argmin(fitness))]
+                 
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
++                # Archive vector for diversity (current-to-pbest/archive)
++                archive_used = False
++                if len(self.archive) > 0 and rng.random() < 0.5:
++                    ar = np.array(self.archive[rng.randint(len(self.archive))])
++                    archive_used = True
+                 
+-                # Mutation and crossover
++                # JADE mutation: v = x_i + F*(pbest - x_i) + F*(a - b)
++                base_ind = i
++                if archive_used:
++                    x_i = pop[base_ind].copy()
++                    v = x_i + F_vals[i] * (pbest - x_i) + F_vals[i] * (a - ar)
++                else:
++                    x_i = pop[base_ind].copy()
++                    v = x_i + F_vals[i] * (pbest - x_i) + F_vals[i] * (a - b)
++                
++                # Binomial crossover with CR
+                 j_rand = rng.randint(0, self.dim)
+                 for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
++                    if rng.random() < CR_vals[i] or j == j_rand:
++                        new_pop[i, j] = v[j]
++                    else:
++                        new_pop[i, j] = x_i[j]
+                 
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
++                # Boundary handling: reflect (better than clip for preserving diversity)
++                trial = new_pop[i]
++                lo = lb - trial
++                hi = trial - ub
++                trial = trial + np.where(lo > 0, 2.0 * lo, 0.0)
++                trial = trial - np.where(hi > 0, 2.0 * hi, 0.0)
++                new_pop[i] = np.clip(trial, lb, ub)
+             
+-            # Evaluate trial vectors
++            # Evaluate trial vectors and perform JADE selection with archive
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+@@ -160,13 +248,52 @@ class DEOptimizer:
+                 
+                 # Greedy selection
+                 if trial_f < fitness[i]:
++                    # Add replaced individual to archive (cap archive size)
++                    if len(self.archive) < int(pop_size * self.archive_rate * 10):
++                        self.archive.append(pop[i].copy())
++                    elif len(self.archive) > 0:
++                        self.archive[rng.randint(len(self.archive))] = pop[i].copy()
++                    
++                    # Record successful F/CR for memory adaptation
++                    success_F.append(trial_F[i])
++                    success_CR.append(trial_C[i])
++                    
+                     pop[i] = new_pop[i].copy()
+                     fitness[i] = trial_f
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+             
+-            # Compute reward: 1 if improved, 0 otherwise
++            # JADE memory update: Lehmer mean for F, arithmetic mean for CR
++            if len(success_F) > 0:
++                sf = np.array(success_F)
++                scr = np.array(success_CR)
++                # Lehmer mean of F
++                if np.sum(sf) > 1e-12:
++                    self.memory_F[self.memory_pos] = float(np.sum(sf * sf) / np.sum(sf))
++                # Arithmetic mean of CR
++                if len(scr) > 0:
++                    self.memory_CR[self.memory_pos] = float(np.mean(scr))
++                self.memory_pos = (self.memory_pos + 1) % self.memory_size
++                self.mu_F = float(np.mean(self.memory_F))
++                self.mu_CR = float(np.mean(self.memory_CR))
++                success_F = []
++                success_CR = []
++            elif use_jade:
++                # No successes: slightly increase exploration (random walk in memory)
++                self.mu_F = float(np.clip(self.mu_F + rng.normal(0, 0.02), 0.1, 1.0))
++
++            # Stagnation detection / escape: boost mutation diversity after no progress
++            if gbest_f < prev_gbest_f - 1e-12:
++                stagnation_count = 0
++            else:
++                stagnation_count += 1
++            if stagnation_count > 5:
++                self.mu_F = 0.9
++                self.mu_CR = 0.5
++                stagnation_count = 0
++            
++            # Compute reward: 1 if improved, small positive for success rate
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+             # Store transition in controller's replay buffer
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..93b790e 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -10,6 +10,7 @@ from typing import Dict, Any
+ # Import global configuration
+ import sys
+ import os
++import math
+ try:
+     sys.path.insert(0, '/hada')
+     from config import set_global_seed, SEED
+@@ -131,10 +132,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(math.log(self.epsilon_start))
++        log_eps_end = float(math.log(self.epsilon_end))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(math.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.
+diff --git a/task_agent.py b/task_agent.py
+index 9ab022e..550fc5d 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -179,7 +179,7 @@ A structurally upgraded algorithm that is too slow will cause the evaluation to
+ - Keep archive operations cheap (simple append/truncate, not full scans).
+ - **MANDATORY smoke test before finishing**: run a quick 20D sphere test with 2000 evals and ensure it completes in <30 seconds.
+ 
+-## VECTORIZED IMPLEMENTATION PATTERN (USE THIS TO AVOID TIMEOUTS)
++## VECTORIZED IMPLEMENTATION PATTERN (MANDATORY - READ THIS OR YOU WILL TIME OUT)
+ 
+ If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate all mutant vectors as a NumPy array:
+ 

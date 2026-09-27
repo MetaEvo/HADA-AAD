@@ -1,0 +1,47 @@
+diff --git a/task_agent.py b/task_agent.py
+index 5a8a489..cf34c9d 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -82,6 +82,22 @@ You MUST make a **structural change to the core search mechanism**:
+ - Changing constants, adding tiny random perturbations, or altering initialization only is NOT acceptable
+ - If your diff only changes numeric literals (e.g., F=0.5 to F=0.7, swarm_size 40 to 50, adding `+ 0.1*rand`), it will be rejected
+ 
++### 🔥 CURRENT STATE OF THE ART (READ THIS BEFORE YOU START):
++The **BEST-KNOWN SCORE is 0.93121** achieved by **generation 11's L-SHADE implementation** (Success-History Adaptive DE + Linear Population Size Reduction + stagnation-triggered restart). See the winning diff at:
++`/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff`
++
++**READ THAT DIFF FIRST.** It shows exactly what a winning structural change looks like: SHADE memory (memory_F/memory_CR), current-to-pbest/1 mutation, external archive, LPSR (shrinking population via `current_n`), and restart on stagnation.
++
++### ⚠️ NEW FAILURE MODE TO AVOID (gen_17 regression):
++**Making constants configurable via the controller is NOT a structural change.** In gen_17, a Task Agent took an existing JADE implementation and only changed hardcoded values (`0.2` pbest pool → `params.get('pbest_rate', 0.2)`) to be controller-driven. This scored **0.8157**, far BELOW the best 0.93121. Do NOT repeat this - plumbing parameters from the controller to existing constants does NOT improve the algorithm.
++
++**Your job is to make the algorithm itself better.** If the current file is baseline DE, implement L-SHADE (see gen_11 diff). If L-SHADE is already present, add a NEW mechanism on top:
++- **Linear Population Size Reduction (LPSR)** - shrink population linearly each generation (this was in gen_11 and helped)
++- **Restart when diversity collapses** - if mean pairwise distance < epsilon, reinitialize worst 80% keeping best
++- **Local search / hill-climbing** - refine the best individual every K generations
++- **Opposition-based learning (OBL)** - during initialization or after each generation
++- **Ensemble / multi-operator DE** - randomly choose between current-to-pbest/1, rand/1, best/1
++
+ You can improve dramatically by:
+ 
+ **Try these algorithm upgrades (in order of expected impact):**
+@@ -182,13 +198,14 @@ new_pop = trials
+ ## MANDATORY WORKFLOW - FOLLOW THESE STEPS:
+ 1. **READ the domain code**: Use editor view on `/hada/domains/{domain}/dqn_de_util.py` to understand exactly how your code is called and scored
+ 2. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py`
+-3. **READ the meta-learning code**: Use editor view on `/hada/metabbo/meta_learning.py`
+-4. **MAKE your changes**: Use editor str_replace to actually modify the code files
++3. **READ the best-known winning diff (gen_11, score 0.93121)**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this shows exactly what structural L-SHADE changes produced the best score
++4. **READ the meta-learning code**: Use editor view on `/hada/metabbo/meta_learning.py`
++5. **MAKE your changes**: Use editor str_replace to actually modify the code files
+    - **YOU MUST call `editor` with command='str_replace' at least once to modify `/hada/metabbo/ec_algorithm.py`**
+    - **If you have not modified ec_algorithm.py with a structural algorithm change, your response is INCOMPLETE.**
+-5. **VERIFY your diff is structural**: Re-read the modified `ec_algorithm.py` and confirm you changed core search logic (mutation/crossover/selection/adaptation), not just numeric constants
+-6. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
+-7. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++6. **VERIFY your diff is structural**: Re-read the modified `ec_algorithm.py` and confirm you changed core search logic (mutation/crossover/selection/adaptation), not just numeric constants. If your diff only makes existing constants configurable via controller params, it will score poorly and is NOT acceptable.
++7. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
++8. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
+ 
+ ## ⚠️ PERFORMANCE AND TIMEOUT WARNING (CRITICAL - A TIMEOUT SCORES ZERO):
+ Previous attempts that structurally upgraded the algorithm (e.g., L-SHADE) sometimes became **so slow that the evaluation timed out (>120 seconds on a simple sphere problem with only 2000 evals)**. A timeout means the entire generation scores ZERO, which is worse than no change at all.

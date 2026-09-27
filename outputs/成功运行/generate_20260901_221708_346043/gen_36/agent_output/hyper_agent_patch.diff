@@ -1,0 +1,95 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index ef2866c..4f103c3 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -151,9 +151,10 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+    - Task Agent made partial/broken edits causing IndentationError or NameError (most common failure mode in recent generations)
+    - Task Agent never modified ec_algorithm.py (most common early-generation failure)
+ 
+-5. **If the diff contains a broken/incomplete algorithm rewrite**, your primary goal this round is to update task_agent.py to:
++5. **If the diff contains a broken/incomplete algorithm rewrite OR an incremental JADE patch that didn't improve score**, your primary goal this round is to update task_agent.py to:
+    - Point to `/hada/metabbo/reference_jade.py` as a complete, drop-in JADE implementation
+-   - Mandate **whole-file or whole-method replacement** via a single str_replace, not a chain of small edits
++   - Mandate **whole-file replacement** via a single `cp` or `str_replace`, NEVER a chain of small edits
++   - Add explicit FORBIDDEN PATTERNS (per-individual Python loops over dim, helper-method patching, multiple small str_replace edits inside optimize)
+    - Require `python -m py_compile` and a short smoke test BEFORE submitting
+ 
+ 6. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
+diff --git a/task_agent.py b/task_agent.py
+index 6762150..179325d 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -73,27 +73,55 @@ So your modified `ec_algorithm.py` MUST still provide:
+ - Each function evaluation MUST increment `evals` and stop when `evals >= self.max_evals`
+ 
+ ## WHAT TO IMPROVE (be aggressive - try completely different algorithms):
+-The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. The baseline score is ~0.88 on BBOB. You can improve dramatically by:
+-
+-**⚠️ CRITICAL: A COMPLETE REFERENCE JADE IMPLEMENTATION IS PROVIDED AT `/hada/metabbo/reference_jade.py`**
+-This file contains a complete, working, syntactically valid `DEOptimizer` class implementing JADE. If you want to use JADE, the SAFEST approach is:
+-1. Read `/hada/metabbo/reference_jade.py`
+-2. Use `editor` → `str_replace` on `/hada/metabbo/ec_algorithm.py` to replace the **ENTIRE content** of ec_algorithm.py with the contents of reference_jade.py (or first `view` reference_jade.py, then rewrite ec_algorithm.py with the same complete implementation)
+-
+-**Try these algorithm upgrades (in order of expected impact):**
+-1. **SHADE / L-SHADE**: Success-History based Adaptive DE - CEC competition winner, adapts F and CR per-individual
+-2. **JADE**: Adaptive DE with external archive and current-to-pbest mutation (reference implementation provided!)
+-3. **CMA-ES**: Covariance Matrix Adaptation Evolution Strategy - state-of-the-art for continuous black-box optimization
+-4. **Hybrid DE variants**: Add mechanisms like opposition-based learning, restart, local search, diversity maintenance
+-5. **Improved initialization**: Latin Hypercube Sampling, Sobol sequence, or opposite-based initialization
+-
+-**Structural changes you can make:**
+-- **REPLACE THE ENTIRE `DEOptimizer` CLASS** (not just parts of the loop) with a completely different algorithm (SHADE, JADE, CMA-ES) while keeping the same class/method interface — this is much safer than making incremental edits to the existing DE loop
+-- Add an external archive for storing inferior solutions (JADE-style)
+-- Implement parameter adaptation (SHADE-style success-history memory)
++The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. The baseline score has been stuck at ~0.87-0.88 for many generations because previous agents only made small parameter tweaks or partial JADE-style patches to the DE loop. **You MUST make a real algorithmic change this generation.**
++
++## ⚠️ THE #1 RULE THIS GENERATION: REPLACE, DON'T PATCH
++The previous generation tried to incrementally patch the DE loop into a JADE hybrid (adding `_sample_cauchy`, `_reflect`, an `archive` list, current-to-pbest mutation) but the score did not improve (still ~0.87). **Incremental patching of the existing DE loop is FORBIDDEN.**
++The ONLY acceptable approach is to replace the ENTIRE `DEOptimizer` class (or the entire file) with a complete, working algorithm implementation.
++
++## ✅ THE SAFEST WAY TO GET A WORKING JADE: COPY THE REFERENCE FILE
++A complete, syntactically valid, drop-in JADE implementation is provided at:
++**`/hada/metabbo/reference_jade.py`**
++
++This file contains a full `DEOptimizer` class with:
++- JADE adaptive F and CR (Cauchy/Normal sampling + success-history memory)
++- current-to-pbest/1 mutation
++- external archive
++- binomial crossover
++- boundary reflection
++- the exact interface required by the evaluator
++
++**DO THIS EXACTLY (in this order):**
++1. `editor view /hada/metabbo/reference_jade.py` — read the whole file.
++2. REPLACE the entire `/hada/metabbo/ec_algorithm.py` with the contents of `reference_jade.py`. The simplest, safest way is one bash command:
++   ```bash
++   cp /hada/metabbo/reference_jade.py /hada/metabbo/ec_algorithm.py
++   ```
++   If you prefer the editor, use ONE `str_replace` that replaces the ENTIRE file content (old_str = the whole current file, new_str = the whole reference file).
++3. Run `python -m py_compile /hada/metabbo/ec_algorithm.py`.
++4. Run the smoke test below.
++5. ONLY AFTER the smoke test passes, you MAY make small improvements on top of the working JADE (e.g., add a restart, tune `pbest` ratio, change pop size). Do NOT attempt a full rewrite from scratch.
++
++## FORBIDDEN PATTERNS (DO NOT DO ANY OF THESE)
++- ❌ Do NOT add helper methods (`_sample_cauchy`, `_reflect`, etc.) piecemeal to the existing DE loop.
++- ❌ Do NOT keep the old `for i in range(pop_size): for j in range(self.dim):` per-individual/per-dimension mutation+crossover loop. This is too slow and causes timeouts.
++- ❌ Do NOT write a chain of 5-10 small `str_replace` edits inside `optimize()`. One whole-file replacement is required.
++- ❌ Do NOT modify `/hada/hyper_agent.py` or `/hada/metabbo/param_controller.py` unless explicitly instructed. Focus ALL effort on `/hada/metabbo/ec_algorithm.py`.
++
++## Other algorithm options (only if you choose NOT to use JADE):
++If you implement a different algorithm (SHADE, CMA-ES, etc.), you MUST still:
++- Replace the entire `DEOptimizer` class in ONE str_replace (or copy a complete reference file).
++- Keep the exact `__init__` / `optimize` interface.
++- Use vectorized NumPy operations for mutation/crossover (no `for j in range(self.dim)` loops).
++- Pass the smoke test before finishing.
++
++## Structural changes you can make ON TOP of a working JADE:
++- Add an external archive (already in reference_jade.py)
++- Implement parameter adaptation (already in reference_jade.py)
+ - Add population restart when diversity drops
+ - Add local search / hill-climbing as a final refinement
+ - Change population sizing, mutation strategies, crossover schemes
++- Add improved initialization (Latin Hypercube, Sobol, opposition-based)
+ 
+ **Meta-learning improvements:**
+ - The `controller` object passed to `__init__` implements a `step(obs)` method returning a dict of parameters (e.g., {{'F': ..., 'CR': ...}}). You can use these parameters in your algorithm.

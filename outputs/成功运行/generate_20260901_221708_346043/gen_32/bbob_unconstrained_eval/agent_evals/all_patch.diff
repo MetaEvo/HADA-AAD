@@ -1,0 +1,204 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index e50c8cc..997f422 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -149,8 +149,11 @@ class DEOptimizer:
+         archive = np.empty((0, self.dim))
+         archive_capacity = max(pop_size, 20)
+         stagnation_count = 0
+-        local_search_interval = 20
+-        local_search_n = max(1, min(3, pop_size // 10))
++        local_search_interval = 10
++        local_search_n = max(4, min(self.dim, 8))
++        # Adaptive coordinate perturbation step sizes for local pattern search
++        pattern_step = (ub - lb) * 0.05
++        pattern_step = np.maximum(pattern_step, 1e-6 * (ub - lb))
+         
+         while not done:
+             iteration += 1
+@@ -195,17 +198,30 @@ class DEOptimizer:
+             pbest_num = max(1, int(pop_size * pbest_p))
+             pbest_indices = sorted_idx[:pbest_num]
+             
+-            # Generate trial vectors using SHADE current-to-pbest/1
++            # Adaptive strategy selection: current-to-pbest is default;
++            # when stagnating, mix in exploration-oriented rand/1 and
++            # rotation-invariant current-to-rand/1 variants.
++            # Also apply jSO-style F boosting for a small fraction.
++            explore_frac = 0.15
++            if stagnation_count >= 3:
++                explore_frac = 0.4
++            elif progress > 0.7:
++                explore_frac = 0.08
++
++            # Generate trial vectors using adaptive SHADE/jSO hybrid
+             for i in range(pop_size):
+                 # Sample F_i from Cauchy distribution based on history memory
+                 mi = int(rng.randint(memory_size))
+                 mu_F = float(memory_F[mi]) * 0.5 + ctrl_F * 0.5
+                 mu_CR = float(memory_CR[mi]) * 0.5 + ctrl_CR * 0.5
+                 F_i = float(mu_F + 0.1 * rng.standard_cauchy())
++                # jSO-style: a few large-F individuals help escape local minima
++                if rng.random() < 0.1:
++                    F_i = max(F_i, 1.1 + 0.2 * rng.random())
+                 if F_i <= 0.0:
+                     F_i = 0.1
+-                elif F_i > 1.0:
+-                    F_i = 1.0
++                elif F_i > 1.4:
++                    F_i = 1.4
+                 CR_i = float(rng.normal(mu_CR, 0.1))
+                 CR_i = max(0.0, min(1.0, CR_i))
+                 F_i_values[i] = F_i
+@@ -215,10 +231,7 @@ class DEOptimizer:
+                 pbest_i = int(pbest_indices[int(rng.randint(len(pbest_indices)))])
+                 pbest_x = pop[pbest_i]
+                 
+-                # current-to-pbest/1 mutation
+-                base = pop[i] + F_i * (pbest_x - pop[i])
+-                
+-                # r1 from population, r2 from population or archive
++                # Choose r1 from population, r2 from population or archive
+                 r1 = int(rng.randint(pop_size))
+                 while r1 == i:
+                     r1 = int(rng.randint(pop_size))
+@@ -234,15 +247,34 @@ class DEOptimizer:
+                         x2 = archive[r2 - pop_size]
+                     else:
+                         x2 = pop[r2]
++
++                # Select mutation strategy adaptively
++                strategy_rand = rng.random()
++                if strategy_rand < explore_frac:
++                    # rand/1: strongest exploration, ignores current and pbest
++                    if rng.random() < 0.5:
++                        mutant = pop[r1] + F_i * (x2 - pop[int(rng.randint(pop_size))])
++                    else:
++                        # current-to-rand/1 (no crossover, rotation-invariant)
++                        mutant = pop[i] + F_i * (pop[r1] - x2) + F_i * (pbest_x - pop[i])
++                elif strategy_rand < explore_frac + 0.1:
++                    # pbest/1: focused exploitation toward a top solution
++                    mutant = pbest_x + F_i * (pop[r1] - x2)
++                else:
++                    # current-to-pbest/1 (SHADE/JADE default)
++                    base = pop[i] + F_i * (pbest_x - pop[i])
++                    mutant = base + F_i * (pop[r1] - x2)
+                 
+-                mutant = base + F_i * (pop[r1] - x2)
+-                
+-                # Binomial crossover
+-                j_rand = int(rng.randint(self.dim))
+-                mask = rng.random(self.dim) < CR_i
+-                mask[j_rand] = True
+-                trial = np.where(mask, mutant, pop[i])
+-                trial = self._reflect(trial, lb, ub)
++                # Binomial crossover (skip for some current-to-rand variants)
++                if strategy_rand < explore_frac and strategy_rand >= explore_frac - 0.05:
++                    # pure current-to-rand/1: no crossover
++                    trial = self._reflect(mutant, lb, ub)
++                else:
++                    j_rand = int(rng.randint(self.dim))
++                    mask = rng.random(self.dim) < CR_i
++                    mask[j_rand] = True
++                    trial = np.where(mask, mutant, pop[i])
++                    trial = self._reflect(trial, lb, ub)
+                 new_pop[i] = trial
+             
+             # Evaluate trial vectors and apply greedy selection
+@@ -301,6 +333,44 @@ class DEOptimizer:
+                         pop[worst_i] = cand.copy()
+                         fitness[worst_i] = cand_f
+ 
++                # Coordinate-wise Hooke-Jeeves pattern search
++                # Very effective for (partially) separable BBOB functions (e.g. f1 Sphere)
++                step = pattern_step * max(1e-6, (1.0 - 0.5 * progress))
++                max_pattern_evals = max(10, min(2 * self.dim, int(self.max_evals * 0.004)))
++                pattern_used = 0
++                improved_this_round = True
++                guard = 0
++                while improved_this_round and guard < self.dim and evals < self.max_evals and pattern_used < max_pattern_evals:
++                    improved_this_round = False
++                    guard += 1
++                    for k in range(self.dim):
++                        if evals >= self.max_evals or pattern_used >= max_pattern_evals:
++                            break
++                        old_val = gbest[k]
++                        # Try positive step
++                        cand = gbest.copy()
++                        cand[k] = old_val + step[k]
++                        cand = self._reflect(cand, lb, ub)
++                        cand_f = evaluate_problem(problem, cand)
++                        evals += 1
++                        pattern_used += 1
++                        if cand_f < gbest_f:
++                            gbest_f = cand_f
++                            gbest = cand.copy()
++                            improved_this_round = True
++                            continue
++                        # Try negative step
++                        cand = gbest.copy()
++                        cand[k] = old_val - step[k]
++                        cand = self._reflect(cand, lb, ub)
++                        cand_f = evaluate_problem(problem, cand)
++                        evals += 1
++                        pattern_used += 1
++                        if cand_f < gbest_f:
++                            gbest_f = cand_f
++                            gbest = cand.copy()
++                            improved_this_round = True
++
+             # Stagnation detection: restart worst individuals if no improvement for several iterations
+             if gbest_f < prev_gbest_f - 1e-12:
+                 stagnation_count = 0
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 0422f8e..e0a68b0 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -46,7 +46,12 @@ class StaticController(ParamController):
+ 
+ class DummyHeuristicController(ParamController):
+     """A tiny heuristic that decays inertia weight and adjusts
+-    cognitive/social coefficients based on progress."""
++    cognitive/social coefficients based on progress.
++
++    It also includes stagnation detection: if the best fitness has not
++    improved for several iterations, it temporarily boosts exploration
++    (F, CR, w, pbest_p) to help escape local optima.
++    """
+     def __init__(self, w_start=0.9, w_end=0.4, decay_iters=100):
+         self.w_start = w_start
+         self.w_end = w_end
+@@ -54,6 +59,8 @@ class DummyHeuristicController(ParamController):
+ 
+     def reset(self, problem_meta: Dict[str, Any]) -> None:
+         self.it = 0
++        self.last_gbest = None
++        self.stagnation_count = 0
+ 
+     def step(self, observation: Dict[str, Any]) -> Dict[str, float]:
+         self.it = observation.get('iteration', self.it + 1)
+@@ -67,6 +74,24 @@ class DummyHeuristicController(ParamController):
+         CR = 0.9 - 0.4 * t # More crossover early for diversity
+         # Increase exploitation pressure (smaller pbest set) as the run progresses
+         pbest_p = max(0.05, 0.2 * (1.0 - t))
++
++        # Stagnation detection: no improvement in best fitness for several iterations
++        cur_gbest = observation.get('gbest_f', None)
++        if cur_gbest is not None and self.last_gbest is not None:
++            if cur_gbest < self.last_gbest - 1e-12:
++                self.stagnation_count = 0
++            else:
++                self.stagnation_count += 1
++        self.last_gbest = cur_gbest
++
++        # Temporary diversity boost when the run is stuck
++        if self.stagnation_count >= 5:
++            F = min(1.0, F + 0.25)
++            CR = min(1.0, CR + 0.2)
++            w = min(0.95, w + 0.1)
++            pbest_p = min(0.5, pbest_p + 0.05)
++            self.stagnation_count = 0
++
+         return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR, 'pbest_p': pbest_p}
+ 
+ 

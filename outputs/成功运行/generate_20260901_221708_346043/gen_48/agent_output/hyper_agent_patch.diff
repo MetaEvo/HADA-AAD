@@ -1,0 +1,64 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 26e6bef..021b1b8 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -148,7 +148,7 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ ## ANALYSIS GUIDANCE (what to look at before making changes):
+ 
+-1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes.
++1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes. If the diff shows a JADE implementation but MISSING L-SHADE components (LPSR, restart, success-history memory), the next task_agent.py prompt must explicitly require those missing components. **JADE-only scores ~0.886 (gen_47), while full L-SHADE scores 0.931 (gen_11) - merely upgrading from DE to JADE is NOT enough; the prompt must insist on the full L-SHADE package.**
+ 
+ 2. **ALWAYS check if the Task Agent actually used the editor tool** by looking at chat_history_task_agent.md. If the Task Agent only described changes without applying them, your prompt must be more explicit about using the editor tool.
+ 
+diff --git a/task_agent.py b/task_agent.py
+index 377b4d2..5f43603 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -84,9 +84,9 @@ You MUST make a **structural change to the core search mechanism**:
+ 
+ ### 🔥 CURRENT STATE OF THE ART (READ THIS BEFORE YOU START):
+ - **BEST-KNOWN SCORE = 0.93121** (gen_11, L-SHADE: Success-History Adaptive DE + **Linear Population Size Reduction (LPSR)** + **stagnation-triggered restart**). Winning diff: `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff`
+-- **gen_19 scored 0.9019** with a JADE implementation (current-to-pbest/1 + external archive + adaptive mu_F/mu_CR). It WAS a genuine structural improvement, but it is STILL BELOW the gen_11 L-SHADE score.
+-- **Why L-SHADE beat JADE**: L-SHADE adds (a) **LPSR** - shrink the population linearly as evaluation budget is consumed, and (b) **restart when diversity collapses** - reinitialize the worst ~80% while keeping the best. These two mechanisms are what pushed the score above 0.93.
+-- **Your #1 job**: Read the gen_11 winning diff FIRST (see workflow step 3 below), then implement L-SHADE with LPSR + restart. If JADE/L-SHADE core is already present, ADD the missing mechanisms (LPSR, restart, local search, OBL, multi-operator ensemble) on top - do NOT merely re-plumb existing constants through the controller.
++- **gen_47 scored 0.8864** with JADE-only (archive + current-to-pbest + adaptive F/CR but NO LPSR, NO success-history memory, NO restart). This is a REAL structural change but STILL BELOW the gen_11 L-SHADE score. **If your implementation is JADE-only, you will likely score around 0.88, not 0.93.**
++- **Why L-SHADE beat JADE**: L-SHADE adds (a) **LPSR** - shrink the population linearly as evaluation budget is consumed, (b) **restart when diversity collapses** - reinitialize the worst ~80% while keeping the best, and (c) **success-history parameter memory** with weighted Lehmer mean (SHADE memory, not just a single moving mean). These mechanisms are what pushed the score above 0.93.
++- **YOUR #1 JOB IS NON-NEGOTIABLE**: Read the gen_11 winning diff FIRST (see workflow step 3 below), then implement the **FULL L-SHADE** with ALL of: SHADE success-history memory (memory_F/memory_CR arrays updated with weighted Lehmer mean), current-to-pbest/1 mutation, external archive, LPSR, and stagnation-triggered restart. **If you only implement JADE (even vectorized), you are NOT done. The prompt below explicitly requires LPSR and restart; a diff without them will be considered incomplete.**
+ 
+ ### ⚠️ KNOWN FAILURE MODES TO AVOID (from actual past generations):
+ 1. **gen_17 regression (score 0.8157)**: Making hardcoded JADE constants configurable via controller params (`0.2` pbest pool → `params.get('pbest_rate', 0.2)`) is NOT a structural change. Plumbing parameters does NOT improve the algorithm.
+@@ -192,17 +192,24 @@ new_pop = trials
+ 
+ ## MANDATORY WORKFLOW - FOLLOW THESE STEPS:
+ 1. **READ the domain code**: Use editor view on `/hada/domains/{domain}/dqn_de_util.py` to understand exactly how your code is called and scored
+-2. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py`
+-3. **READ the best-known winning diff (gen_11, score 0.93121)**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this shows exactly what structural L-SHADE changes (success-history memory, current-to-pbest/1, external archive, **LPSR**, **restart on stagnation**) produced the best score. **If your planned change is NOT at least as sophisticated as that diff, stop and rethink.**
+-4. **READ the meta-learning code**: Use editor view on `/hada/metabbo/meta_learning.py`
+-5. **MAKE your changes**: Use editor str_replace to actually modify the code files
++2. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py` - it is currently basic DE (or JADE from a previous generation). **Note whether JADE is already present**: if JADE archive/current-to-pbest/adaptive-F is there but LPSR/restart/memory are missing, your job is to ADD those missing L-SHADE components, NOT to reimplement JADE again.
++3. **READ the best-known winning diff (gen_11, score 0.93121)**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this shows exactly what structural L-SHADE changes (success-history memory, current-to-pbest/1, external archive, **LPSR**, **restart on stagnation**) produced the best score. **If your planned change is NOT at least as sophisticated as that diff, stop and rethink** - in particular, you MUST plan to add ALL of: (a) memory_F/memory_CR with weighted Lehmer mean, (b) LPSR, (c) stagnation restart, (d) archive, (e) current-to-pbest/1.
++4. **Optional: also read the gen_47 JADE-only diff** at `/hada/outputs/generate_20260828_142858_379759/gen_47/bbob_unconstrained_eval/agent_evals/all_patch.diff` to see the JADE-only implementation that scored 0.8864 - this is a good reference for the JADE core, but you must ADD LPSR + restart + memory on top to beat 0.93.
++5. **READ the meta-learning code**: Use editor view on `/hada/metabbo/meta_learning.py`
++6. **MAKE your changes**: Use editor str_replace to actually modify the code files
+    - **YOU MUST call `editor` with command='str_replace' at least once to modify `/hada/metabbo/ec_algorithm.py`**
+    - **If you have not modified ec_algorithm.py with a structural algorithm change, your response is INCOMPLETE.**
+-6. **VERIFY your diff is structural**: Re-read the modified `ec_algorithm.py` and confirm you changed core search logic (mutation/crossover/selection/adaptation), not just numeric constants. If your diff only makes existing constants configurable via controller params, it will score poorly and is NOT acceptable.
+-7. **VERIFY you included the gen_11 winning mechanisms**: Confirm your implementation includes at least TWO of: (a) Success-History parameter memory (memory_F/memory_CR with Lehmer mean update), (b) Linear Population Size Reduction (LPSR - population shrinks as evals budget is consumed), (c) stagnation-triggered restart/diversity recovery, (d) external archive of inferior solutions. **If you only implemented plain JADE without LPSR/restart, you are leaving score on the table.**
+-8. **VERIFY vectorization**: Make sure mutation/crossover is implemented with NumPy array ops (e.g., `rng.random((n, self.dim))` masks), NOT per-individual Python `for i in range(pop_size)` with inner `for j in range(self.dim)` loops. The gen_19 JADE used Python per-individual loops and scored 0.9019; vectorized L-SHADE scored 0.93121.
+-9. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
+-10. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++7. **VERIFY your diff is structural**: Re-read the modified `ec_algorithm.py` and confirm you changed core search logic (mutation/crossover/selection/adaptation), not just numeric constants. If your diff only makes existing constants configurable via controller params, it will score poorly and is NOT acceptable.
++8. **VERIFY you included the gen_11 winning mechanisms**: Confirm your implementation includes **ALL** of the following L-SHADE components (not just two, not just JADE):
++   - (a) Success-History parameter memory: `memory_F`/`memory_CR` arrays (size H, e.g., 10) updated with **weighted Lehmer mean** of successful F/CR each generation
++   - (b) **Linear Population Size Reduction (LPSR)**: the active population `current_n` shrinks linearly as `evals/max_evals` increases (e.g., from `pop_size` down to `max(4, 0.15*pop_size)`)
++   - (c) **stagnation-triggered restart/diversity recovery**: when the best fitness has not improved for N generations (e.g., 5), reinitialize the worst ~80% of the population around the current best (Gaussian perturbation with std proportional to remaining budget)
++   - (d) external archive of inferior solutions (JADE/SHADE style, bounded size)
++   - (e) current-to-pbest/1 mutation with pbest pool ~15% of population
++   **If you only implement plain JADE without LPSR+restart, you will score about 0.88 like gen_47, NOT 0.93+. The task is to EXCEED the best-known score, so LPSR and restart are not optional - they are MANDATORY.**
++9. **VERIFY vectorization**: Make sure mutation/crossover is implemented with NumPy array ops (e.g., `rng.random((n, self.dim))` masks), NOT per-individual Python `for i in range(pop_size)` with inner `for j in range(self.dim)` loops. The gen_19 JADE used Python per-individual loops and scored 0.9019; vectorized L-SHADE scored 0.93121.
++10. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
++11. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
+ 
+ ## ⚠️ PERFORMANCE AND TIMEOUT WARNING (CRITICAL - A TIMEOUT SCORES ZERO):
+ Previous attempts that structurally upgraded the algorithm (e.g., L-SHADE) sometimes became **so slow that the evaluation timed out (>120 seconds on a simple sphere problem with only 2000 evals)**. A timeout means the entire generation scores ZERO, which is worse than no change at all.

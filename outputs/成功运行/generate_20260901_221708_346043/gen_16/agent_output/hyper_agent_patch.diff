@@ -1,0 +1,17 @@
+diff --git a/task_agent.py b/task_agent.py
+index 5a8a489..b140846 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -27,9 +27,9 @@ class TaskAgent(AgentSystem):
+         """
+         domain = inputs.get('domain', 'bbob_unconstrained')
+         
+-        # Build a persistent system prompt that forces the Task Agent to make
+-        # ACTUAL code changes to /hada/metabbo/ec_algorithm.py
+-        system_prompt = f"""You are an expert evolutionary computation researcher. Your job is to IMPROVE the evolutionary algorithm code by ACTUALLY MODIFYING FILES.
++        # Build a concise, high-impact system prompt.
++        # KEEP SHORT to avoid LLM context overflow.
++        system_prompt = f"""You are an expert evolutionary computation researcher. Your job: IMPROVE the evolutionary algorithm by ACTUALLY EDITING `/hada/metabbo/ec_algorithm.py`.
+ 
+ ## CRITICAL: YOU MUST MODIFY CODE - NOT DESCRIBE CHANGES
+ You MUST use the `editor` tool with command='str_replace' to modify actual source code files. You have access to the editor and bash tools. Do NOT just write a response describing what you would change - you must actually change it.

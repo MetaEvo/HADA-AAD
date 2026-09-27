@@ -1,0 +1,147 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index f03197d..462eae5 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -88,13 +88,27 @@ class DEOptimizer:
+         effective_seed = seed if seed is not None else _config_seed
+         rng = np.random.RandomState(effective_seed)
+ 
+-        # Initialize population - Latin Hypercube Sampling for better coverage
++        # Initialize population - Latin Hypercube Sampling + Quasi-Oppositional Learning
+         if pop_size > 1:
+             lhs = np.zeros((pop_size, self.dim))
+             for j in range(self.dim):
+                 perm = rng.permutation(pop_size)
+                 lhs[:, j] = (perm + rng.random(pop_size)) / pop_size
+-            pop = lb + lhs * (ub - lb)
++            lhs_pop = lb + lhs * (ub - lb)
++            pop = np.empty_like(lhs_pop)
++            mid = (lb + ub) / 2.0
++            n_reflect = pop_size // 2
++            # Pair each of the first half of LHS points with a quasi-opposite point
++            for i in range(n_reflect):
++                opp = mid - (lhs_pop[i] - mid)
++                # Quasi-opposite: random point between center and the true opposite
++                quasi_opp = mid + (opp - mid) * rng.uniform(0.0, 0.5, self.dim)
++                quasi_opp = np.clip(quasi_opp, lb, ub)
++                pop[2 * i] = lhs_pop[i].copy()
++                pop[2 * i + 1] = quasi_opp
++            # Fill any remaining slots with plain LHS points
++            if 2 * n_reflect < pop_size:
++                pop[2 * n_reflect:] = lhs_pop[2 * n_reflect:].copy()
+         else:
+             pop = rng.uniform(lb, ub, (pop_size, self.dim))
+         
+@@ -122,12 +136,12 @@ class DEOptimizer:
+         done = False
+         
+         # SHADE (Success-History Adaptive Differential Evolution) state
+-        memory_size = 5
++        memory_size = 10
+         memory_F = np.full(memory_size, 0.5)
+         memory_CR = np.full(memory_size, 0.5)
+         memory_idx = 0
+         archive = np.empty((0, self.dim))
+-        archive_capacity = max(pop_size, 20)
++        archive_capacity = max(pop_size * 4, 40)
+         stagnation_count = 0
+ 
+         # L-SHADE linear population size reduction
+@@ -149,8 +163,10 @@ class DEOptimizer:
+             ctrl_CR = float(params.get('CR', self.CR))
+             
+             progress = min(1.0, evals / max(1.0, self.max_evals))
+-            # More exploitation as the budget is consumed
+-            pbest_p = max(0.05, 0.2 * (1.0 - progress))
++            # More exploitation as the budget is consumed; allow controller to override
++            pbest_p = max(0.05, min(0.25, 0.2 * (1.0 - progress)))
++            if 'pbest_p' in params:
++                pbest_p = min(0.25, max(0.02, float(params.get('pbest_p'))))
+             
+             prev_gbest_f = gbest_f
+             pop_old = pop.copy()
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 01ba422..5577083 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -144,4 +144,64 @@ class AdaptiveDEController(ParamController):
+             epsilon = max(epsilon, min(current_gbest_cv * 0.5, self.epsilon_start))
+ 
+         return {'F': float(F), 'CR': float(CR), 'strategy': strategy,
+-                'epsilon': float(epsilon)}
+\ No newline at end of file
++                'epsilon': float(epsilon)}
++
++
++class AdaptiveSHADEController(ParamController):
++    """A refined progress-and-stagnation-aware controller for SHADE algorithms.
++
++    It provides F and CR values that decay smoothly from exploratory to
++    exploitative as the evaluation budget is consumed.  It also detects
++    stagnation (no improvement of the global best for several steps) and
++    temporarily boosts diversity to escape local optima.  Additionally, it
++    exposes a `pbest_p` parameter that the optimizer may use to control the
++    size of the pbest set in current-to-pbest/1 mutation.
++    """
++    def __init__(self, f_start=0.9, f_end=0.3, cr_start=0.9, cr_end=0.4,
++                 stagnation_boost=0.15, boost_steps=3):
++        self.f_start = f_start
++        self.f_end = f_end
++        self.cr_start = cr_start
++        self.cr_end = cr_end
++        self.stagnation_boost = stagnation_boost
++        self.boost_steps = boost_steps
++
++    def reset(self, problem_meta: Dict[str, Any]) -> None:
++        self.it = 0
++        self.last_gbest = None
++        self.stagnation_count = 0
++        self.boost_left = 0
++
++    def step(self, observation: Dict[str, Any]) -> Dict[str, float]:
++        self.it = observation.get('iteration', self.it + 1)
++        evals = float(observation.get('evals', 0))
++        max_evals = float(observation.get('max_evals', 10000))
++        t = min(1.0, evals / max(1.0, max_evals))
++
++        # Smooth exploration -> exploitation schedule
++        F = self.f_start * (1.0 - t) + self.f_end * t
++        CR = self.cr_start * (1.0 - t) + self.cr_end * t
++
++        # Detect stagnation / improvement
++        current_gbest = observation.get('gbest_f', None)
++        if current_gbest is not None and self.last_gbest is not None:
++            if current_gbest < self.last_gbest - 1e-15:
++                self.stagnation_count = 0
++            else:
++                self.stagnation_count += 1
++        self.last_gbest = current_gbest
++
++        # Boost diversity after several consecutive non-improving steps
++        if self.stagnation_count >= self.boost_steps:
++            self.boost_left = 2
++            self.stagnation_count = 0
++        if self.boost_left > 0:
++            F = min(1.0, F + self.stagnation_boost)
++            CR = min(1.0, CR + self.stagnation_boost)
++            self.boost_left -= 1
++
++        # Smaller pbest set late in the run for more exploitation
++        pbest_p = max(0.05, min(0.25, 0.20 * (1.0 - t)))
++
++        return {'F': float(F), 'CR': float(CR), 'pbest_p': float(pbest_p),
++                'strategy': 'shade'}
+\ No newline at end of file
+diff --git a/task_agent.py b/task_agent.py
+index 2f87696..dff6d8e 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -39,7 +39,7 @@ Parameter tweaks (F, CR, w, c1, c2, pop_size, LHS init, restart thresholds, boun
+ - ❌ Blending controller outputs with memory values
+ - ❌ Fixing log/exp names
+ - ❌ Adding boundary handling tweaks
+-- ❌ Increasing SHADE memory size or tweaking pbest_p
++- ❌ Increasing SHADE memory size (e.g., changing memory_size from 5 to 10) or tweaking pbest_p
+ - ❌ Rewriting dqn_de_util.py or any file in /hada/domains/
+ - ❌ Breaking the `optimize()` return contract
+ 

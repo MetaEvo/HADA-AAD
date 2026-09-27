@@ -1,0 +1,204 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..91fbcb3 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -110,6 +110,9 @@ class DEOptimizer:
+         initial_population_positions = pop.copy()
+         initial_population_fitness = fitness.copy()
+ 
++        # Archive for JADE-style mutation
++        archive = np.empty((0, self.dim))
++
+         # Main loop
+         iteration = 0
+         done = False
+@@ -129,26 +132,51 @@ class DEOptimizer:
+             
+             prev_gbest_f = gbest_f
+             
+-            # Generate trial vectors
++            # JADE-style mutation with archive and optional pbest selection
+             new_pop = np.copy(pop)
++            # Sort indices by fitness (smaller is better)
++            sorted_idx = np.argsort(fitness)
++            # Use top pbest_rate% as pbest pool, minimum 2
++            pbest_rate = float(params.get('pbest_rate', 0.2))
++            pbest_n = max(2, int(pbest_rate * pop_size))
++            archive_prob = float(params.get('archive_prob', 0.5))
++            
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
++                # Per-individual dithering of F and CR for better exploration
++                F_i = float(np.clip(F + 0.1 * (rng.random() - 0.5), 0.1, 1.0))
++                CR_i = float(np.clip(CR + 0.1 * (rng.random() - 0.5), 0.0, 1.0))
++                
++                # Choose pbest from top pbest_n
++                pbest_idx = sorted_idx[rng.randint(0, pbest_n)]
++                if pbest_idx == i and pbest_n > 1:
++                    # Pick another pbest index to avoid using current as pbest
++                    pbest_idx = sorted_idx[rng.randint(0, pbest_n)]
++                x_pbest = pop[pbest_idx]
++                
++                # Choose two distinct indices != i from population
+                 candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
+-                else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
++                if len(candidates) < 2:
++                    candidates = list(range(pop_size))
++                a_idx, b_idx = rng.choice(candidates, size=2, replace=False)
++                a = pop[a_idx]
++                b = pop[b_idx]
++                
++                # With probability archive_prob, use archive vector as b for extra diversity
++                if archive.shape[0] >= 1 and rng.random() < archive_prob:
++                    b = archive[rng.randint(0, archive.shape[0])]
+                 
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
++                # Mutation: current-to-pbest/1
++                mutant = pop[i] + F_i * (x_pbest - pop[i]) + F_i * (a - b)
+                 
+-                # Mutation and crossover
++                # Binomial crossover
+                 j_rand = rng.randint(0, self.dim)
++                trial = np.copy(pop[i])
+                 for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
++                    if rng.random() < CR_i or j == j_rand:
++                        trial[j] = mutant[j]
+                 
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
++                # Boundary handling: clip and optionally reflect
++                new_pop[i] = np.clip(trial, lb, ub)
+             
+             # Evaluate trial vectors
+             for i in range(pop_size):
+@@ -158,8 +186,13 @@ class DEOptimizer:
+                 trial_f = evaluate_problem(problem, new_pop[i])
+                 evals += 1
+                 
+-                # Greedy selection
++                # Greedy selection with JADE archive update
+                 if trial_f < fitness[i]:
++                    # Archive the replaced (old) solution for diversity
++                    if archive.shape[0] >= pop_size:
++                        archive[rng.randint(0, pop_size)] = pop[i].copy()
++                    else:
++                        archive = np.vstack([archive, pop[i].copy()])
+                     pop[i] = new_pop[i].copy()
+                     fitness[i] = trial_f
+                     if trial_f < gbest_f:
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..471f304 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -142,5 +142,12 @@ class AdaptiveDEController(ParamController):
+         if current_gbest_cv is not None and t > 0.5 and current_gbest_cv > epsilon:
+             epsilon = max(epsilon, min(current_gbest_cv * 0.5, self.epsilon_start))
+ 
++        # JADE-style parameters - pbest pool size shrinks for exploitation,
++        # archive usage high early for diversity, lower late for convergence
++        pbest_rate = 0.4 * (1.0 - t) + 0.1 * t
++        archive_prob = 0.7 * (1.0 - t) + 0.3 * t
++
+         return {'F': float(F), 'CR': float(CR), 'strategy': strategy,
+-                'epsilon': float(epsilon)}
+\ No newline at end of file
++                'epsilon': float(epsilon),
++                'pbest_rate': float(pbest_rate),
++                'archive_prob': float(archive_prob)}
+\ No newline at end of file
+diff --git a/hyper_agent_improvements.md b/hyper_agent_improvements.md
+index 8cdfcfb..d8bdc08 100644
+--- a/hyper_agent_improvements.md
++++ b/hyper_agent_improvements.md
+@@ -1,20 +1,40 @@
+ # Meta Agent Improvements
+ 
+-## Changes made this generation:
++## Changes made in Generation 17 (latest):
+ 
+-### 1. task_agent.py prompt improvements
++### 1. Added current status awareness
++- Added explicit note that SHADE was already implemented in gen_16 and scored **0.9244**, which is **below the best-known score of 0.93121** (from gen_11).
++- This prevents the task agent from simply re-implementing SHADE (which won't improve scores) and forces it to either add new mechanisms on top of SHADE or switch to a completely different algorithm family.
++
++### 2. Added incremental stacking / progression guidance (`## ⚡ PROGRESSION / INCREMENTAL STACKING`)
++- Instructs the task agent to make **exactly ONE major structural addition per generation** (e.g., LPSR this gen, restart next gen, local search after that).
++- Provides concrete mechanisms to stack on top of existing SHADE:
++  - L-SHADE's Linear Population Size Reduction (LPSR)
++  - Restart when diversity collapses
++  - Local search / hill-climbing
++  - Opposition-based learning (OBL)
++  - Ensemble / multi-operator DE
++- This prevents the "change everything at once" failure mode and ensures each generation's contribution can be isolated.
++
++### 3. Added weak-problem targeting section (`## 🎯 TARGET WEAK PROBLEMS`)
++- Instructs the task agent to read the progress info and generate.log to identify which BBOB functions are consistently underperforming (f14, f7, f15, f10 in recent runs).
++- Gives concrete strategies for weak functions (typically multimodal / ill-conditioned):
++  - Increase diversity (larger initial population, dither)
++  - Add restart
++  - Consider CMA-ES for ill-conditioned problems
++  - More aggressive F/CR adaptation (L-SHADE or jDE)
++
++## Eariler changes (kept for reference):
++
++### 4. task_agent.py prompt improvements (gen_15/16)
+ - Added **absolute requirement** that the Task Agent must make a structural change to the core search mechanism, not just tweak parameters. Explicitly lists failure modes (changing F, CR, swarm_size, adding tiny perturbations) as unacceptable.
+ - Added a **concrete SHADE implementation guide** with step-by-step pseudocode for success-history memory, current-to-pbest mutation, archive, and Lehmer mean updates.
+-- Added a **vectorized NumPy mutation/crossover template** for SHADE/JADE, with explicit code showing how to sample F/CR per-individual, do pbest mutation, and binomial crossover using NumPy array operations instead of per-individual Python loops.
++- Added a **vectorized NumPy mutation/crossover template** for SHADE/JADE with explicit code.
+ - Added a **performance/timeout warning** section explaining that a timeout scores zero. Documented the concrete gen_11 failure where an L-SHADE implementation with nested Python for-loops timed out (>120s on a 20D sphere with 2000 evals).
+-- Made the smoke test **mandatory** before finishing, with a concrete Python script to run.
++- Made the smoke test **mandatory** before finishing.
+ - Emphasized that FAST CODE IS AS IMPORTANT AS CORRECT CODE.
+ 
+-### 2. hyper_agent.py prompt improvements
+-- Added mandatory step-by-step actions for the Meta Agent: find the latest generation, read the diff, read chat history, and react to parameter-only tweaks or evaluation failures.
+-- Added a requirement to write a summary of changes to `/hada/agent_output/hyper_agent_improvements.md`.
+-
+ ## Rationale
+ - Prior generations plateaued because Task Agents only tweaked PSO/DE parameter values instead of replacing the algorithm.
+ - When Task Agents finally attempted structural changes (L-SHADE), the first implementation was too slow (nested Python loops) and timed out, scoring zero.
+-- These prompt changes should push future Task Agents to: (1) actually replace the search algorithm, and (2) do so with vectorized NumPy code that runs fast enough to pass the evaluation timeout.
++- Gen_16 implemented SHADE but scored lower (0.9244) than the best (0.93121 from gen_11), so the prompt now pushes for stacking mechanisms or trying different algorithm families, one structural change per generation, and targeting weak problems.
+diff --git a/task_agent.py b/task_agent.py
+index b140846..e78c391 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -76,6 +76,8 @@ So your modified `ec_algorithm.py` MUST still provide:
+ 
+ ### ⚠️ ABSOLUTE REQUIREMENT: YOU MUST REPLACE THE ALGORITHM, NOT JUST TWEAK PARAMETERS
+ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. Scores have plateaued because prior attempts only tweaked parameters (w, c1, c2, F, CR). **THIS IS A FAILURE MODE.**
++
++**CURRENT STATUS (gen_16):** A SHADE (Success-History Adaptive DE) was already implemented in `/hada/metabbo/ec_algorithm.py` by a previous Task Agent. It scored **0.9244**, which is **BELOW the best-known score of 0.93121** (from gen_11). So just adding SHADE is NOT enough. You MUST either (a) add a new mechanism on top of the existing SHADE (LPSR, restart, local search, OBL, ensemble), or (b) switch to a different algorithm family (CMA-ES, jDE, SaNSDE, CoDE) that can perform better.
+ You MUST make a **structural change to the core search mechanism**:
+ - Replace the mutation/crossover/selection logic in `DEOptimizer` with a fundamentally different algorithm (SHADE, JADE, CMA-ES, L-SHADE, etc.)
+ - Add new mechanisms: external archive, parameter adaptation, population restart, local search, opposition-based learning, diversity maintenance
+@@ -179,6 +181,23 @@ new_pop = trials
+ - The `controller` object passed to `__init__` implements a `step(obs)` method returning a dict of parameters (e.g., {{'F': ..., 'CR': ...}}). You can use these parameters in your algorithm.
+ - Improve the meta_learning.py controller architecture if needed (e.g., different state features, action space, NN architecture)
+ 
++## ⚡ PROGRESSION / INCREMENTAL STACKING (READ THIS - DO NOT REPEAT THE SAME ALGORITHM):
++- **If SHADE was already implemented** (check the diff in /hada/outputs/generate_20260828_142858_379759/gen_16/), **do NOT just tweak its constants**. STACK a new mechanism on top:
++  - Add **L-SHADE's Linear Population Size Reduction (LPSR)** - shrink population linearly each generation.
++  - Add **restart when diversity collapses** (if mean pairwise distance < epsilon, reinitialize worst 80% keeping best).
++  - Add **local search / hill-climbing** on the best individual every K generations.
++  - Add **opposition-based learning (OBL)** during initialization or after each generation.
++  - Add **ensemble / multi-operator DE** (randomly choose between current-to-pbest/1, rand/1, best/1 each generation).
++- **Make exactly ONE major structural addition per generation** (e.g., this gen = LPSR, next gen = restart). Do NOT try 5 changes at once.
++
++## 🎯 TARGET WEAK PROBLEMS (READ THE PROGRESS DATA):
++- Read `/hada/outputs/generate_20260828_142858_379759/progress_info_bbob_unconstrained_train_agent.txt` and the latest `generate.log` to see which BBOB functions are weak (e.g., f14, f7, f15, f10 in recent runs).
++- For weak functions (usually multimodal / ill-conditioned):
++  - **Increase diversity** (larger initial population, dither, mutation scaling).
++  - **Add restart** to escape local optima.
++  - **Consider CMA-ES** for ill-conditioned problems (f14/f15 often Rosenbrock/ellipsoid).
++  - **Adapt F/CR more aggressively** (L-SHADE or jDE).
++
+ ## MANDATORY WORKFLOW - FOLLOW THESE STEPS:
+ 1. **READ the domain code**: Use editor view on `/hada/domains/{domain}/dqn_de_util.py` to understand exactly how your code is called and scored
+ 2. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py`

@@ -1,0 +1,13 @@
+diff --git a/task_agent.py b/task_agent.py
+index 88e7e8f..1130f92 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -63,7 +63,7 @@ The current file already has a **partial JADE implementation** with archive and
+ - ❌ Memory update uses simple weighted mean, NOT the **weighted Lehmer mean** (which gen_11 used for F)
+ - ✅ Controller observation includes pop_size hint
+ 
+-**YOUR JOB: Upgrade the current JADE implementation to L-SHADE by adding the missing components from gen_11's winning implementation.**
++**YOUR JOB: Add missing L-SHADE components (LPSR, restart, weighted Lehmer mean) by adding the missing components from gen_11's winning implementation.**
+ 
+ ## FILES YOU ARE ALLOWED TO MODIFY:
+ 1. `/hada/metabbo/ec_algorithm.py` - The main evolutionary algorithm (MOST IMPORTANT)

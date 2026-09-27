@@ -1,0 +1,215 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..e49f7ff 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -113,58 +113,143 @@ class DEOptimizer:
+         # Main loop
+         iteration = 0
+         done = False
+-        
++
++        # JADE archive and parameter adaptation state
++        archive = np.empty((0, self.dim))
++        archive_fitness = np.empty(0)
++        archive_capacity = pop_size
++        pbest_p = 0.1
++        mu_F = float(self.F)
++        mu_CR = float(self.CR)
++        successful_F = []
++        successful_CR = []
++        param_memory_initialized = False
++
+         while not done:
+             iteration += 1
+             params = dict(self.params)
+             if self.controller is not None:
+-                obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 
++                obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f,
+                        'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
+                 step_params = self.controller.step(obs)
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+-            
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
+-            
++
++            base_F = float(params.get('F', self.F))
++            base_CR = float(params.get('CR', self.CR))
++
++            # On the first iteration, seed parameter memory from controller-provided values
++            if not param_memory_initialized:
++                mu_F = base_F
++                mu_CR = base_CR
++                param_memory_initialized = True
++
+             prev_gbest_f = gbest_f
+-            
+-            # Generate trial vectors
++
++            # Sort indices by fitness for pbest selection
++            sorted_indices = np.argsort(fitness)
++
++            # Generate trial vectors with JADE current-to-pbest/1
+             new_pop = np.copy(pop)
++            trial_F = np.zeros(pop_size)
++            trial_CR = np.zeros(pop_size)
++            success_this_iter = []
++
++            if len(successful_F) >= 20:
++                # JADE-style learning rate for parameter memory adaptation
++                mu_F = 0.9 * mu_F + 0.1 * float(np.mean(successful_F))
++                mu_CR = 0.9 * mu_CR + 0.1 * float(np.mean(successful_CR))
++                successful_F = []
++                successful_CR = []
++
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
++                # Adaptive F_i from Cauchy distribution around mu_F, clipped to [0, 1]
++                F_i = float(rng.standard_cauchy() * 0.1 + mu_F)
++                F_i = 0.0 if F_i < 0.0 else (1.0 if F_i > 1.0 else F_i)
++                # Adaptive CR_i from normal distribution around mu_CR, clipped to [0, 1]
++                CR_i = float(rng.normal(mu_CR, 0.1))
++                CR_i = 0.0 if CR_i < 0.0 else (1.0 if CR_i > 1.0 else CR_i)
++
++                trial_F[i] = F_i
++                trial_CR[i] = CR_i
++
++                # current-to-pbest/1
++                pbest_idx = sorted_indices[rng.randint(0, max(1, int(pbest_p * pop_size)))]
++                pbest = pop[pbest_idx]
++
++                # r1 distinct from i and pbest_idx
++                candidates = [idx for idx in range(pop_size) if idx != i and idx != pbest_idx]
++                if len(candidates) == 0:
++                    candidates = [idx for idx in range(pop_size) if idx != i]
++                r1 = int(candidates[rng.randint(0, len(candidates))])
++
++                # r2 from pop union archive (prefer archive if nonempty)
++                if archive.shape[0] > 0 and rng.random() < 0.5:
++                    r2 = int(rng.randint(0, archive.shape[0]))
++                    r2_vec = archive[r2]
+                 else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
+-                
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
+-                
+-                # Mutation and crossover
++                    candidates2 = [idx for idx in range(pop_size) if idx != i and idx != r1]
++                    if len(candidates2) == 0:
++                        candidates2 = [idx for idx in range(pop_size) if idx != i]
++                    r2 = int(candidates2[rng.randint(0, len(candidates2))])
++                    r2_vec = pop[r2]
++
++                # Mutation
++                mutant = pop[i] + F_i * (pbest - pop[i]) + F_i * (pop[r1] - r2_vec)
++
++                # Binomial crossover
+                 j_rand = rng.randint(0, self.dim)
+                 for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
+-                
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
+-            
+-            # Evaluate trial vectors
++                    if rng.random() < CR_i or j == j_rand:
++                        new_pop[i, j] = mutant[j]
++                    else:
++                        new_pop[i, j] = pop[i, j]
++
++                # Boundary handling: reflect back into bounds for better diversity
++                for j in range(self.dim):
++                    if new_pop[i, j] < lb[j]:
++                        new_pop[i, j] = lb[j] + (lb[j] - new_pop[i, j])
++                        if new_pop[i, j] > ub[j]:
++                            new_pop[i, j] = lb[j] + rng.random() * (ub[j] - lb[j])
++                    elif new_pop[i, j] > ub[j]:
++                        new_pop[i, j] = ub[j] - (new_pop[i, j] - ub[j])
++                        if new_pop[i, j] < lb[j]:
++                            new_pop[i, j] = lb[j] + rng.random() * (ub[j] - lb[j])
++
++            # Evaluate trial vectors and select
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+                     break
+                 trial_f = evaluate_problem(problem, new_pop[i])
+                 evals += 1
+-                
+-                # Greedy selection
++
+                 if trial_f < fitness[i]:
++                    # Store previous solution in archive if it is not the current global best
++                    if fitness[i] > gbest_f + 1e-12:
++                        archive = np.vstack([archive, pop[i].reshape(1, -1)])
++                        archive_fitness = np.append(archive_fitness, fitness[i])
++                        if archive.shape[0] > archive_capacity:
++                            # Remove random archive member to keep bounded size
++                            remove_idx = int(rng.randint(0, archive.shape[0]))
++                            archive = np.delete(archive, remove_idx, axis=0)
++                            archive_fitness = np.delete(archive_fitness, remove_idx)
++
+                     pop[i] = new_pop[i].copy()
+                     fitness[i] = trial_f
++                    success_this_iter.append((i, trial_F[i], trial_CR[i]))
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
++
++            # Update success-history parameter memories using successful F/CR
++            for _, f_s, cr_s in success_this_iter:
++                successful_F.append(f_s)
++                successful_CR.append(cr_s)
++            # Bound the memory size to avoid unbounded growth
++            if len(successful_F) > 100:
++                successful_F = successful_F[-100:]
++                successful_CR = successful_CR[-100:]
+             
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..378d719 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -4,6 +4,7 @@ Defines `ParamController` abstract interface and example controllers that can
+ be injected into `PSOOptimizer` to adjust parameters dynamically. This is
+ the hook that a DQN-based controller should implement.
+ """
++import math
+ from abc import ABC, abstractmethod
+ from typing import Dict, Any
+ 
+@@ -131,10 +132,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = math.log(self.epsilon_start)
++        log_eps_end = math.log(self.epsilon_end)
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = math.exp(log_eps)
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.
+diff --git a/task_agent.py b/task_agent.py
+index 377b4d2..c6fadd1 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -139,6 +139,10 @@ archive = np.empty((0, self.dim))      # external archive of inferior solutions
+ # Make sure every function evaluation still increments `evals` and stops at `self.max_evals`.
+ ```
+ 
++### ✅ MANDATORY: GEN_28 LESSON - LPSR + VECTORIZATION ARE REQUIRED:
++Gen_28 implemented a real JADE with archive + current-to-pbest + parameter memory + restart, BUT used per-individual Python loops AND did NOT implement LPSR. It scored 0.8875 - far below the gen_11 L-SHADE score 0.93121.
++Unless you implement BOTH (1) fully vectorized NumPy mutation/crossover (NO `for i in range(pop_size)` / `for j in range(self.dim)` loops in the search loop) AND (2) Linear Population Size Reduction (LPSR - shrink `n` linearly from initial population toward `pop_min` as `evals/max_evals` increases then truncate `pop`, `fitness`, and the memory/archive consistently), your patch is likely to underperform.
++
+ ### 🚀 VECTORIZED SHADE/JADE MUTATION (REQUIRED STYLE - DO THIS, NOT per-individual Python loops):
+ Implement the per-generation trial generation with NumPy array operations, NOT with a `for i in range(n): for j in range(dim):` loop. A fast vectorized template is:
+ 

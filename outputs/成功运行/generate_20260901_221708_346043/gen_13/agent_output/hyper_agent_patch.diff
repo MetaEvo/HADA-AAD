@@ -1,0 +1,123 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index ea8cd0c..3a261ac 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -71,6 +71,19 @@ CRITICAL REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
+    Step 3: Verify your changes were applied
+    Step 4: Respond with JSON
+ 
++## REQUIRED ACTIONS FOR THIS META-AGENT RUN (MANDATORY - DO NOT SKIP):
++1. **Find the latest generation**: The previous generation results are under `{eval_path}/`. List that directory to identify the highest `gen_N` folder.
++2. **Read the diff**: Use `editor` view on `{eval_path}/gen_N/<domain>_eval/agent_evals/all_patch.diff` (use the domain relevant to this run, e.g., `bbob_unconstrained`) to see exactly what the Task Agent changed.
++3. **Read the chat history**: Use `editor` view on `{eval_path}/gen_N/<domain>_eval/agent_evals/chat_history_task_agent.md` to check whether the Task Agent actually used the `editor` tool.
++4. **If the diff only has parameter tweaks, constant changes, or is empty**: Your updated `task_agent.py` prompt MUST be even more forceful about requiring structural algorithm replacement.
++5. **If evaluations failed**: Read `{eval_path}/gen_N/generate.log` for error messages, then update the `task_agent.py` prompt to explicitly warn against those exact failure modes (e.g., "do NOT call a method before defining it").
++6. **Always modify at least one of task_agent.py or hyper_agent.py** using `editor` with `command='str_replace'` - never just describe changes.
++7. **After making changes, write a short summary of what you changed and why to `/hada/hyper_agent_improvements.md`** (create the file with editor `create` if it does not exist, or `str_replace` to update).
++8. **Ensure the task_agent.py prompt includes ALL of the following sections (add them if missing):**
++   - **FORBIDDEN FILES** - explicitly list protected files the Task Agent must not edit (task_agent.py, hyper_agent.py, domains/, agent/, utils/, config.py, generate_loop.py, harness.py, report.py)
++   - **PERFORMANCE / TIMEOUT WARNING** - warn that slow implementations score ZERO, mandate NumPy vectorized operations, and require a smoke test (20D sphere, 2000 evals, <30s)
++   - **VECTORIZED IMPLEMENTATION PATTERN** - provide a concrete NumPy vectorized current-to-pbest/1 mutation code template to prevent the Task Agent from writing slow Python loops
++
+ ## IMPORTANT GUIDANCE FOR TASK AGENT:
+ 
+ ⚠️ **CRITICAL: The Task Agent MUST try different evolutionary algorithms. This is the #1 priority.**
+diff --git a/task_agent.py b/task_agent.py
+index dad7482..9ab022e 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -51,6 +51,21 @@ Modify the code in `/hada/metabbo/ec_algorithm.py` (and/or `/hyper
+ 
+ You MUST use the `editor` tool with `command='str_replace'` to make actual code changes. Describing changes without editing scores ZERO.
+ 
++## ⛔ FORBIDDEN FILES (DO NOT TOUCH)
++You are FORBIDDEN from modifying these files:
++- `/hada/task_agent.py`
++- `/hada/hyper_agent.py`
++- Any file in `/hada/domains/`, `/hada/agent/`, `/hada/utils/`, `/hada/config.py`, `/hada/generate_loop.py`, `/hada/harness.py`, `/hada/report.py`
++
++Your changes MUST be in `/hada/metabbo/` (ec_algorithm.py, param_controller.py, meta_learning.py, meta_learning_env.py, train_meta_learning.py). If you catch yourself editing any file outside that directory, STOP and revert.
++
++## ⛔ MANDATORY REQUIREMENT: YOU MUST EDIT ec_algorithm.py (REQUIRED)
++Your PRIMARY job is to modify `/hada/metabbo/ec_algorithm.py`. If you have not used `editor` with `str_replace` to change that specific file, **you have not completed the task**. You may also modify `/hada/metabbo/meta_learning.py`, `/hada/metabbo/param_controller.py`, etc., but **editing ec_algorithm.py is mandatory**.
++
++- Before doing anything else, open `/hada/metabbo/ec_algorithm.py` and locate the core search loop (mutation/crossover/selection).
++- If your change does not alter the core search mechanism (mutation strategy, parameter adaptation, selection, population structure), it will be rejected as a non-improvement.
++- After editing, re-read the file to confirm your change is actually present.
++
+ ## CRITICAL CONTEXT FROM PREVIOUS GENERATIONS
+ Previous agents have ONLY made small parameter tweaks to a DE/SHADE optimizer (LHS init, memory size, pbest_p, restart thresholds). This has NOT yielded significant improvement. **You MUST implement a fundamentally different algorithm or a major new mechanism.**
+ 
+@@ -155,6 +170,39 @@ DEOptimizer = CMAESOptimizer  # alias at bottom so dqn_de_util.py still works
+ 4. Verify: `python -m py_compile /hada/metabbo/ec_algorithm.py /hada/metabbo/param_controller.py /hada/metabbo/meta_learning.py`  (via bash tool)
+ 5. Optionally run a short smoke test
+ 
++## PERFORMANCE / TIMEOUT WARNING (CRITICAL - A TIMEOUT SCORES ZERO)
++
++A structurally upgraded algorithm that is too slow will cause the evaluation to time out and score ZERO. **Fast code is as important as correct code.**
++
++- **MUST use NumPy vectorized operations** for mutation, crossover, and selection. Do NOT write per-gene Python `for` loops over the population and dimension (e.g., `for i in range(pop_size): for j in range(dim):` is too slow for 20D+).
++- Avoid expensive per-iteration operations like `np.linalg.eig` inside the main loop, full pairwise distance matrices, or sorting the entire population more than once per generation.
++- Keep archive operations cheap (simple append/truncate, not full scans).
++- **MANDATORY smoke test before finishing**: run a quick 20D sphere test with 2000 evals and ensure it completes in <30 seconds.
++
++## VECTORIZED IMPLEMENTATION PATTERN (USE THIS TO AVOID TIMEOUTS)
++
++If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate all mutant vectors as a NumPy array:
++
++```python
++# Vectorized current-to-pbest/1 mutation for the whole population:
++sorted_idx = np.argsort(fitness)
++pbest_indices = sorted_idx[rng.randint(0, max(1, int(pop_size * p)), size=pop_size)]
++r1 = rng.randint(0, pop_size, size=pop_size)
++r2 = rng.randint(0, pop_size + len(archive), size=pop_size)
++r2_archive = r2 >= pop_size
++x_r2 = pop[r2 % pop_size]  # (if archive is a 2D array, use np.where(r2_archive, archive[r2-pop_size], pop[r2]))
++F_i = np.clip(mu_F + 0.1 * rng.standard_cauchy(pop_size), 0.1, 1.0)
++CR_i = np.clip(mu_CR + 0.1 * rng.randn(pop_size), 0.0, 1.0)
++mutants = pop + F_i[:, None] * (pop[pbest_indices] - pop) + F_i[:, None] * (pop[r1] - x_r2)
++mask = rng.rand(pop_size, self.dim) < CR_i[:, None]
++j_rand = rng.randint(0, self.dim, size=pop_size)
++mask[np.arange(pop_size), j_rand] = True
++trials = np.where(mask, mutants, pop)
++# then evaluate trials and do selection (still vectorizable)
++```
++
++This pattern runs in milliseconds even for 20D, while per-individual Python loops can take >120 seconds.
++
+ ## FINAL CHECKLIST (BEFORE SUBMITTING)
+ - [ ] I actually used `editor` with `str_replace` (REQUIRED)
+ - [ ] I implemented a NEW algorithm or MAJOR mechanism, not just parameter tweaks
+diff --git a/hyper_agent_improvements.md b/hyper_agent_improvements.md
+new file mode 100644
+index 0000000..c77d20d
+--- /dev/null
++++ b/hyper_agent_improvements.md
+@@ -0,0 +1,26 @@
++# Meta-Agent Improvements
++
++## Changes Made
++
++### task_agent.py
++1. **Added FORBIDDEN FILES section** - Explicitly prohibits the Task Agent from modifying `task_agent.py`, `hyper_agent.py`, `domains/`, `agent/`, `utils/`, `config.py`, `generate_loop.py`, `harness.py`, `report.py`. This prevents the Task Agent from wasting effort editing protected files or its own prompt.
++2. **Added PERFORMANCE / TIMEOUT WARNING** - Since a timeout scores zero, the Task Agent is now explicitly warned to use NumPy vectorized operations, avoid expensive per-iteration computations, and run a mandatory smoke test (20D sphere, 2000 evals, <30s) before finishing.
++3. **Added VECTORIZED IMPLEMENTATION PATTERN** - Provided a concrete NumPy vectorized current-to-pbest/1 mutation code template so the Task Agent does not write slow per-individual Python loops (a known cause of gen_11 timeout).
++
++### hyper_agent.py
++1. **Added REQUIRED ACTIONS FOR THIS META-AGENT RUN** - Forces the Meta Agent to:
++   - Find the latest generation directory
++   - Read the Task Agent's diff and chat history
++   - Detect if the diff only has parameter tweaks
++   - Handle evaluation failures by reading logs and updating the prompt with specific warnings
++   - Always modify at least one of task_agent.py/hyper_agent.py
++   - Write a summary to `/hada/hyper_agent_improvements.md`
++
++## Rationale
++
++Previous generations showed Task Agents only making small parameter tweaks (F, CR, w, c1, c2, population size) without changing the core algorithm. The prompt already had strong language about replacing algorithms, but the new changes add:
++- Clear boundaries on which files are editable
++- A concrete performance warning to prevent structural upgrades from timing out (a known failure in gen_11)
++- A mandatory smoke test to catch slow implementations before submission
++
++These changes should push the Task Agent toward implementing genuinely different algorithms (SHADE, JADE, CMA-ES, etc.) while keeping the code fast enough to pass evaluation time limits.
+\ No newline at end of file

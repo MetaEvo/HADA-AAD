@@ -1,0 +1,123 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index a3e6681..125b177 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -148,9 +148,9 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ ## ANALYSIS GUIDANCE (what to look at before making changes):
+ 
+-1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes.
++1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values, memory_size, F, CR, swarm_size), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes.
+ 
+-2. **ALWAYS check if the Task Agent actually used the editor tool** by looking at chat_history_task_agent.md. If the Task Agent only described changes without applying them, your prompt must be more explicit about using the editor tool.
++2. **ALWAYS check if the Task Agent actually used the editor tool** by looking at chat_history_task_agent.md. If the Task Agent only described changes without applying them, your prompt must be more explicit about using the editor tool. If the Task Agent tried to edit code via `bash` with `cat >> file <<'EOF'` / `echo > file` / `sed -i`, add an explicit "FORBIDDEN EDITING METHOD" section to task_agent.py: code edits MUST be done via the `editor` tool (str_replace/insert/create); `bash` must only be used for reading/testing files.
+ 
+ 3. **If evaluations failed**, check generate.log for the exact error. Common issues:
+    - Task Agent introduced a method that doesn't exist
+@@ -158,7 +158,13 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+    - Task Agent never modified ec_algorithm.py (most common)
+    - **Task Agent's structural change is too slow (timeout)** - e.g., gen_30 implemented JADE but used per-individual Python loops over pop_size AND dim for mutation/crossover, plus a per-dimension `_reflect_boundary` loop. This causes timeouts on 20D/2000-eval settings. If you see this, add explicit "FORBIDDEN PATTERNS" and a copy-paste vectorized NumPy template to task_agent.py.
+ 
+-4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py". If the Task Agent makes structural changes but with slow Python loops, update the prompt to provide a complete vectorized NumPy implementation template.
++4. **Latest concrete failure to address (gen_54)**: The Task Agent changed exactly ONE line (`memory_size = 5` → `memory_size = 10`) inside the existing SHADE implementation and earlier tried to edit `param_controller.py` via a `bash cat` heredoc, which hung and timed out. Therefore your updated task_agent.py MUST contain:
++   - A "GEN_54 FAILURE ANALYZED" block stating that changing a single constant (memory_size, F, CR, pbest_p, etc.) is REJECTED and that code edits must NEVER be made via `bash cat >> file <<'EOF'`.
++   - Explicit structural-change requirements: the patch must change the core search operator/algorithm, not just literals.
++   - A complete vectorized NumPy mutation/crossover template (SHADE/JADE-style) so the Task Agent does not reinvent slow per-individual Python loops.
++   - A REJECTION CRITERIA checklist (numeric-only changes, keeping DE as core loop, using bash to edit, broken interface → rejected).
++
++5. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py". If the Task Agent makes structural changes but with slow Python loops, update the prompt to provide a complete vectorized NumPy implementation template.
+ 
+ Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+ 
+diff --git a/hyper_agent_improvements.md b/hyper_agent_improvements.md
+index 0473722..1f6a7d9 100644
+--- a/hyper_agent_improvements.md
++++ b/hyper_agent_improvements.md
+@@ -1,32 +1,23 @@
+ # Meta Agent Improvements
+ 
+-## Changes made this generation (gen_31):
++## Changes made this generation (gen_55):
+ 
+ ### 1. task_agent.py prompt improvements
+-- Added a new **`❌ ABSOLUTELY FORBIDDEN PATTERNS`** section that explicitly identifies the exact failure modes observed in gen_30's diff:
+-  - Per-individual nested Python loops over `pop_size` and `dim` for mutation/crossover (causes timeout on 20D).
+-  - `_reflect_boundary` that loops over each dimension in Python per individual.
+-  - Using `rng.random()` inside a per-gene double loop instead of generating full random matrices at once.
+-  - Calling undefined variables (e.g., `trial_f[i]` before initializing `trial_f` as a NumPy array).
+-  - Submitting without running the mandatory smoke test.
+-- Added a **complete, ready-to-copy, fully vectorized JADE/SHADE-style `optimize()` body** as a template. This template uses:
+-  - `rng.standard_cauchy(pop_size)` and `rng.randn(pop_size)` for per-individual F/CR sampling.
+-  - Vectorized pbest mutation (`pop + F_i[:, None] * (pbest - pop) + F_i[:, None] * (pop[r1] - x2)`).
+-  - NumPy reflection (`np.where(mutants < lb, 2*lb - mutants, mutants)`) instead of Python loops.
+-  - Vectorized binomial crossover with `CR_mask = rng.random((pop_size, self.dim)) < CR_i[:, None]`.
+-  - Only the unavoidable `evaluate_problem` call remains in a Python loop.
+-- Explicitly states: **You must use this vectorized template as your starting point. It is acceptable to modify it, but do NOT revert to per-individual Python loops over mutation/crossover.**
++- Added a **`GEN_54 FAILURE ANALYZED`** block at the very top of the algorithm-replacement section. It explicitly calls out that gen_54's patch changed ONLY ONE LINE (`memory_size = 5` → `memory_size = 10`) and that this is a REJECTED parameter tweak, not an algorithm replacement. Lists memory_size, F, CR, pbest_p, swarm_size, and any single literal value as examples of forbidden-only changes.
++- Added a **`🚫 FORBIDDEN EDITING METHOD (CRITICAL)`** section. It explicitly forbids using `bash` with `cat >> file <<'EOF'`, `echo ... > file`, or `sed -i` to edit Python files. This is because gen_54's chat history shows the Task Agent tried to append a class to `param_controller.py` via `bash cat >> ... <<'EOF'`, which hung for 120+ seconds and timed out. The section states: code edits MUST be done via the `editor` tool (str_replace/insert/create); `bash` is only for running smoke tests, `py_compile`, listing/inspecting files, or grep.
++- Preserved and strengthened the existing structural-replacement mandate, the vectorized SHADE/JADE template, the FORBIDDEN PATTERNS list, and the mandatory fast smoke test.
+ 
+ ### 2. hyper_agent.py prompt improvements
+-- Added gen_30 as a concrete example of a structural-but-slow JADE implementation that uses per-individual Python loops and a per-dimension `_reflect_boundary` loop, causing timeouts.
+-- Instructs the Meta Agent to add explicit "FORBIDDEN PATTERNS" and a copy-paste vectorized NumPy template to task_agent.py when it detects this failure mode.
+-- Directed the Meta Agent to target task_agent.py updates with either "THE ONLY FILE THAT MATTERS IS..." or vectorized implementation templates depending on the failure signature.
++- Updated the ANALYSIS GUIDANCE section to include gen_54's exact failure signature: a one-line `memory_size` tweak inside an existing SHADE implementation, plus a `bash cat` heredoc edit attempt that hung.
++- Added explicit instruction: if the chat history shows the Task Agent editing code via `bash cat >> file <<'EOF'` / `echo > file` / `sed -i`, the Meta Agent MUST add a "FORBIDDEN EDITING METHOD" section to task_agent.py.
++- Added explicit instruction: the updated task_agent.py MUST contain a "GEN_54 FAILURE ANALYZED" block, structural-change requirements, a complete vectorized NumPy mutation/crossover template, and a REJECTION CRITERIA checklist (numeric-only changes, keeping DE as core loop, using bash to edit, broken interface → rejected).
++- Updated the parameter-tweak detection heuristic to include memory_size, F, CR, swarm_size (not just w/c1/c2).
+ 
+ ### 3. Analysis performed this run
+-- Read gen_30 `all_patch.diff`: The Task Agent DID make a structural JADE attempt (archive, current-to-pbest, success-history means, Latin hypercube init), but implemented it with per-individual Python loops and a per-dimension `_reflect_boundary`. This risks timeout/evaluation failure.
+-- Read gen_30 `chat_history_task_agent.md`: Confirms the Task Agent used the `editor` tool to view files and apply changes.
+-- Read current `ec_algorithm.py`: Baseline remains basic DE with per-individual/per-gene loops.
++- Read gen_54 `all_patch.diff`: The patch changed exactly one line (`memory_size = 5` → `memory_size = 10`) inside the existing SHADE implementation. This is a parameter tweak, not a structural algorithm change — a clear FAILURE of the algorithm-replacement mandate.
++- Read gen_54 `chat_history_task_agent.md`: The Task Agent attempted to append an `LSHADEController` class to `/hada/metabbo/param_controller.py` via a `bash cat >> file <<'EOF'` heredoc. This hung for 120+ seconds and timed out, wasting the entire generation's tool-budget. This confirms the need for the FORBIDDEN EDITING METHOD section.
++- Read gen_54 evaluation log: The evaluation itself ran to completion (mean score ~0.9075), but only because the one-line tweak was harmless. No new algorithm was tested.
+ 
+ ## Rationale
+-- Gen_30 shows the Task Agent is now attempting structural changes (good), but the implementation is not vectorized (bad) and will likely time out or be excessively slow.
+-- The new forbidden-patterns section and copy-paste vectorized template directly address this gap so the next generation can implement a fast, correct JADE/SHADE.
++- Gen_54 shows a new failure mode: the Task Agent made a single-constant tweak (memory_size) and called it a change, while also trying to edit code via a `bash` heredoc that hung. Both behaviors must be explicitly forbidden in task_agent.py.
++- The updated prompt now (a) names the exact gen_54 failure, (b) forbids bash-based code editing, (c) reiterates that single-constant changes are rejected, and (d) keeps the complete vectorized template so the Task Agent can implement a genuinely new/faster core loop.
+diff --git a/task_agent.py b/task_agent.py
+index 5be8a1f..72d5a1e 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -76,11 +76,19 @@ So your modified `ec_algorithm.py` MUST still provide:
+ 
+ ### ⚠️ ABSOLUTE REQUIREMENT: YOU MUST REPLACE THE ALGORITHM, NOT JUST TWEAK PARAMETERS
+ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. Scores have plateaued because prior attempts only tweaked parameters (w, c1, c2, F, CR). **THIS IS A FAILURE MODE.**
++
++**GEN_54 FAILURE ANALYZED:** The most recent patch changed ONLY ONE LINE: `memory_size = 5` to `memory_size = 10` inside the existing SHADE implementation. This is a parameter tweak, NOT an algorithm replacement, and it is UNACCEPTABLE. If you only change a numeric constant (including memory_size, F, CR, pbest_p, swarm_size, or any single literal value), your submission WILL BE REJECTED.
++
+ You MUST make a **structural change to the core search mechanism**:
+-- Replace the mutation/crossover/selection logic in `DEOptimizer` with a fundamentally different algorithm (SHADE, JADE, CMA-ES, L-SHADE, etc.)
++- Replace the mutation/crossover/selection logic in `DEOptimizer` with a fundamentally different algorithm (SHADE, JADE, CMA-ES, L-SHADE, etc.) OR rewrite the search loop so that the new algorithm's core update rule (covariance adaptation, comprehensive learning, current-to-pbest with archive, etc.) is the primary driver.
+ - Add new mechanisms: external archive, parameter adaptation, population restart, local search, opposition-based learning, diversity maintenance
+ - Changing constants, adding tiny random perturbations, or altering initialization only is NOT acceptable
+-- If your diff only changes numeric literals (e.g., F=0.5 to F=0.7, swarm_size 40 to 50, adding `+ 0.1*rand`), it will be rejected
++- If your diff only changes numeric literals (e.g., F=0.5 to F=0.7, swarm_size 40 to 50, memory_size 5 to 10, adding `+ 0.1*rand`), it will be rejected
++
++### 🚫 FORBIDDEN EDITING METHOD (CRITICAL)
++- You MUST use the `editor` tool with command='str_replace' (or 'insert'/'create') to modify source code files.
++- NEVER use `bash` with `cat >> file <<'EOF'` or `echo ... > file` or `sed -i` to edit Python files. The bash tool is for running tests and inspecting files, NOT for editing code. Using bash to append or modify code is a FAILURE (it caused a 120-second timeout in gen_54).
++- Use `bash` ONLY for: running the smoke test, `python -m py_compile`, listing/inspecting files, or running grep.
+ 
+ You can improve dramatically by:
+ 
+@@ -355,6 +363,15 @@ PY
+ ```
+ **If this smoke test takes more than ~30 seconds, STOP and optimize your implementation before submitting.**
+ 
++### ❌ REJECTION CRITERIA (YOUR PATCH WILL BE REJECTED IF ANY OF THESE ARE TRUE)
++- [ ] You only changed numeric constants (F, CR, swarm_size, memory_size, pbest_p, etc.)
++- [ ] You kept the same mutation/crossover/selection core loop and only added a minor mechanism on top (OBL, LPSR, turbulence, restart) without replacing the core search operator
++- [ ] You edited Python files via `bash` (`cat >> file <<'EOF'`, `echo > file`, `sed -i`) instead of using the `editor` tool
++- [ ] You did not call `editor str_replace` on `/hada/metabbo/ec_algorithm.py` (viewing is NOT enough)
++- [ ] You introduced methods/variables that don't exist or broke the DEOptimizer/optimize interface
++- [ ] You used per-individual Python loops for mutation/crossover/boundary handling (too slow, causes timeouts)
++- [ ] You submitted without running the mandatory smoke test
++
+ ## REMEMBER:
+ - The evaluation code CANNOT be modified. It expects `DEOptimizer` class with the interface above.
+ - If you introduce a new helper method or class, define it BEFORE using it.

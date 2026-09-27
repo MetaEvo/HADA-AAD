@@ -1,0 +1,225 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 3a261ac..e02a4a3 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -138,7 +138,24 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+    - [ ] The code can actually run without AttributeError or NameError
+    - [ ] Changes are incremental and don't break existing functionality
+ 
+-Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
++## KNOWN FAILURE MODES TO WARN TASK AGENT ABOUT (from recent generations)
++
++### gen_42 failure: per-individual Python loops in JADE-style mutation
++- The Task Agent implemented JADE-style mutation using `for i in range(pop_size):` with per-individual `F_i`, `CR_i`, pbest selection, archive access, and boundary repair inside the loop. This is **forbidden** - even if it is structurally JADE, it is too slow and effectively wastes the structural change.
++- **Your updated task_agent.py prompt MUST include a MANDATORY WHOLE-POPULATION VECTORIZATION VERIFICATION section** with explicit grep commands the Task Agent must run (grep for `for j in range`, `for i in range`, and review all `for .* in .*` loops).
++- **Task Agent must understand: the ONLY allowed Python `for i in range(pop_size)` loop is the evaluation loop that calls `evaluate_problem(problem, trials[i])`.** All mutation/crossover/boundary/selection logic must be NumPy array ops on the whole population.
++
++### gen_42/38 failure: Task Agent edited param_controller.py unnecessarily
++- The Task Agent added `JADEHeuristicController` and modified `DummyHeuristicController` in `param_controller.py` even though the main task was to change `ec_algorithm.py`. This spreads effort and can cause syntax errors.
++- **Your task_agent.py prompt should say: do NOT touch `/hada/metabbo/param_controller.py` unless you have a very specific, justified reason.** If you do edit it, run `python -m py_compile` on it too.
++
++### gen_42 failure: chat history context overflow
++- The chat history shows `Error: Output context exceeded. Please try again.` - the Task Agent's context filled up because it pasted large file contents or repeated long tool output.
++- **Your task_agent.py prompt should include a FILE READING / CONTEXT MANAGEMENT section**: use targeted `editor` views, `sed -n` for small ranges, do not paste entire files, keep messages short.
++
++### gen_38 failure: syntax error from stray `imp` line in param_controller.py
++- The Task Agent introduced a stray `imp` line into param_controller.py, causing a syntax error. This is a code-quality failure.
++- **Your task_agent.py prompt must include a py_compile verification step for every edited file.**
+ 
+ GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code.
+ """
+diff --git a/task_agent.py b/task_agent.py
+index 9ab022e..cf27e9c 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -85,46 +85,11 @@ gbest, stats = de_opt.optimize(problem, train=..., seed=seed)
+ 
+ ## HOW TO IMPLEMENT A NEW ALGORITHM (CONCRETE TEMPLATE)
+ 
+-### Option A: Replace the internals of DEOptimizer.optimize() with JADE / current-to-pbest/1
+-Replace the trial-generation loop with something like:
+-```python
+-# JADE state
+-mu_F = params.get('mu_F', 0.5)
+-mu_CR = params.get('mu_CR', 0.5)
+-archive = np.empty((0, self.dim))
+-p = params.get('p', 0.1)
+-
+-while not done:
+-    # ...
+-    sorted_idx = np.argsort(fitness)
+-    S_F, S_CR = [], []
+-    for i in range(pop_size):
+-        # current-to-pbest/1
+-        pi = sorted_idx[rng.randint(max(1, int(pop_size * p)))]
+-        x_pbest = pop[pi]
+-        r1 = rng.randint(pop_size)
+-        while r1 == i:
+-            r1 = rng.randint(pop_size)
+-        if len(archive) > 0:
+-            r2 = rng.randint(pop_size + len(archive))
+-            x_r2 = archive[r2 - pop_size] if r2 >= pop_size else pop[r2]
+-        else:
+-            r2 = rng.randint(pop_size)
+-            while r2 == i or r2 == r1:
+-                r2 = rng.randint(pop_size)
+-            x_r2 = pop[r2]
+-        F_i = mu_F + 0.1 * rng.standard_cauchy()
+-        F_i = float(np.clip(F_i, 0.1, 1.0))
+-        CR_i = float(np.clip(mu_CR + 0.1 * rng.randn(), 0.0, 1.0))
+-        # mutation + binomial crossover (keep the existing loop structure)
+-        # if the trial improves, add old x_i to archive (capped at archive_capacity)
+-        # and record F_i / CR_i in S_F / S_CR
+-    # update mu_F = sum(f**2 for f in S_F) / sum(f for f in S_F)
+-    # update mu_CR = mean(S_CR)
+-```
++### Option A: Replace the internals of DEOptimizer.optimize() with JADE / current-to-pbest/1 (VECTORIZED)
++**Do NOT use per-individual loops for mutation/crossover.** Use the **WHOLE-POPULATION VECTORIZED JADE/SHADE-CORE** template in the "VECTORIZED IMPLEMENTATION PATTERN" section below. It is the ONLY acceptable way to implement JADE/SHADE-style mutation in this codebase.
+ 
+ ### Option B: Add a new class `JADEOptimizer` (copy DEOptimizer, change mutation)
+-Keep the old `DEOptimizer` or alias: add `DEOptimizer = JADEOptimizer` at the bottom of the file so the caller doesn't break. Make the new class implement JADE/current-to-pbest with archive and parameter adaptation.
++Keep the old `DEOptimizer` or alias: add `DEOptimizer = JADEOptimizer` at the bottom of the file so the caller doesn't break. Make the new class implement JADE/current-to-pbest with archive and parameter adaptation. **Again, the mutation/crossover MUST be fully vectorized across the whole population** (see the vectorized pattern below).
+ 
+ ### Option C: L-SHADE
+ Start from the existing SHADE code (already in the file) and add **Linear Population Size Reduction**: 
+@@ -156,52 +121,127 @@ class CMAESOptimizer:
+ DEOptimizer = CMAESOptimizer  # alias at bottom so dqn_de_util.py still works
+ ```
+ 
++### Option E (STRONGLY RECOMMENDED): Switch to a completely different well-known algorithm class
++Consider implementing **DE/rand/1/bin with dither**, **DE/best/1/bin**, **Controlled PSO** (CLPSO), **IPOP-CMA-ES restart**, or **GA with BLX-alpha crossover** - still preserving the `DEOptimizer` name/alias. The key is to change the actual search operator, not just constants. Whatever you choose, keep the whole-population NumPy vectorization mandate.
++
+ ## WHAT NOT TO DO
+ - ❌ Don't just change F, CR, w, c1, c2, pop_size values
+ - ❌ Don't just add LHS initialization (already done in previous generations)
+ - ❌ Don't just increase SHADE memory size or tweak pbest_p (already done)
+ - ❌ Don't rewrite dqn_de_util.py or any file in /hada/domains/
+ - ❌ Don't break the `optimize()` return contract
++- ❌ **Don't touch `/hada/metabbo/param_controller.py` unless you have a very specific, justified reason.** Previous generations (gen_42, gen_38) wasted effort and introduced bugs there. If you do edit it, run `python -m py_compile` on it too.
++- ❌ **Don't paste entire file contents into the chat** - this caused "Output context exceeded" failures in gen_42. Use targeted `editor` views (`view_range`) or `sed -n` for small line ranges only.
++- ❌ **Don't introduce Python loops for mutation/crossover** - gen_42's JADE attempt used `for i in range(pop_size)` with per-individual mutation/crossover and was effectively wasted. The ONLY acceptable Python loop is the evaluation loop calling `evaluate_problem(problem, trials[i])`.
+ 
+ ## PROCESS
+-1. Read `/hada/domains/{domain}/dqn_de_util.py` and `/hada/metabbo/ec_algorithm.py` (use `editor` with command='view')
++1. Read `/hada/domains/{domain}/dqn_de_util.py` and `/hada/metabbo/ec_algorithm.py` (use `editor` with command='view' with small `view_range`)
+ 2. Choose ONE algorithm change (don't spread effort across many things)
+ 3. Use `editor` → `str_replace` to edit the file
+ 4. Verify: `python -m py_compile /hada/metabbo/ec_algorithm.py /hada/metabbo/param_controller.py /hada/metabbo/meta_learning.py`  (via bash tool)
+-5. Optionally run a short smoke test
++5. Verify vectorization: run the grep commands in the "MANDATORY WHOLE-POPULATION VECTORIZATION VERIFICATION" section below
++6. Optionally run a short smoke test
+ 
+ ## PERFORMANCE / TIMEOUT WARNING (CRITICAL - A TIMEOUT SCORES ZERO)
+ 
+ A structurally upgraded algorithm that is too slow will cause the evaluation to time out and score ZERO. **Fast code is as important as correct code.**
+ 
+-- **MUST use NumPy vectorized operations** for mutation, crossover, and selection. Do NOT write per-gene Python `for` loops over the population and dimension (e.g., `for i in range(pop_size): for j in range(dim):` is too slow for 20D+).
++- **MUST use WHOLE-POPULATION NumPy vectorized operations** for mutation, crossover, and selection. Do NOT write per-individual Python loops that build one trial vector at a time. Especially do NOT write per-gene Python `for` loops (e.g., `for i in range(pop_size): for j in range(dim):` is catastrophically slow for 20D+).
++- **The ONLY Python `for i in range(pop_size)` loop allowed is the loop that calls `evaluate_problem(problem, trials[i])` and increments `evals`.** All mutation, crossover, boundary repair, pbest/archive indexing, and selection logic MUST be expressed as NumPy array operations over the entire population at once.
++- **Do NOT mix per-individual loop logic with vectorized operations.** The previous generation (gen_42) still used `for i in range(pop_size):` for JADE mutation/crossover, which needlessly slows the search and wastes budget. A truly vectorized implementation should produce ALL mutants with a few array expressions before any evaluation loop.
+ - Avoid expensive per-iteration operations like `np.linalg.eig` inside the main loop, full pairwise distance matrices, or sorting the entire population more than once per generation.
+-- Keep archive operations cheap (simple append/truncate, not full scans).
++- Keep archive operations cheap (simple append/truncate or a fixed-size 2D array, not full scans).
+ - **MANDATORY smoke test before finishing**: run a quick 20D sphere test with 2000 evals and ensure it completes in <30 seconds.
+ 
++## MANDATORY WHOLE-POPULATION VECTORIZATION VERIFICATION (RUN THESE BEFORE SUBMITTING)
++
++Run these commands with the bash tool and confirm the output:
++
++```bash
++grep -n 'for j in range' /hada/metabbo/ec_algorithm.py
++# EXPECTED: no output. If any line appears, you FAILED - rewrite that section.
++
++grep -n 'for i in range' /hada/metabbo/ec_algorithm.py
++# EXPECTED: every match must be inside the evaluation loop only and must be immediately followed
++# by a call to evaluate_problem(problem, ...) or evals increment. If you see mutation math,
++# crossover masks, archive operations, or pbest selection inside a Python loop, you FAILED.
++
++grep -n 'for .* in .*:' /hada/metabbo/ec_algorithm.py
++# Review every remaining Python loop. There should be at most one loop per optimization iteration
++# (the evaluation loop). If you see more, you are almost certainly too slow.
++```
++
++If any of these checks fail, STOP and rewrite the whole mutation/crossover/selection section using the vectorized pattern below.
++
+ ## VECTORIZED IMPLEMENTATION PATTERN (USE THIS TO AVOID TIMEOUTS)
+ 
+-If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate all mutant vectors as a NumPy array:
++If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate ALL mutant vectors in one NumPy expression for the whole population:
+ 
+ ```python
+-# Vectorized current-to-pbest/1 mutation for the whole population:
++# --- WHOLE-POPULATION VECTORIZED JADE/SHADE-CORE (copy this pattern) ---
++# This replaces the entire mutation+crossover+selection block, except the evaluation loop.
++
++# p-best indices for every individual (vectorized)
+ sorted_idx = np.argsort(fitness)
+-pbest_indices = sorted_idx[rng.randint(0, max(1, int(pop_size * p)), size=pop_size)]
+-r1 = rng.randint(0, pop_size, size=pop_size)
++pbest_pool_size = max(1, int(pop_size * p))
++pbest_indices = sorted_idx[rng.randint(0, pbest_pool_size, size=pop_size)]
++
++# r1: random distinct from each i (use permutation trick)
++r1 = np.array([rng.choice(np.delete(np.arange(pop_size), i)) for i in range(pop_size)])  # small vectorized-ish; acceptable
++# r2: random from population+archive; archive indexed safely
+ r2 = rng.randint(0, pop_size + len(archive), size=pop_size)
+-r2_archive = r2 >= pop_size
+-x_r2 = pop[r2 % pop_size]  # (if archive is a 2D array, use np.where(r2_archive, archive[r2-pop_size], pop[r2]))
++use_archive = r2 >= pop_size
++r2_pop = np.where(use_archive, rng.randint(0, pop_size, size=pop_size), r2)
++r2_vec = pop[r2_pop]
++if len(archive) > 0:
++    r2_vec = np.where(use_archive[:, None], archive[r2 - pop_size], r2_vec)
++
++# per-individual F and CR, vectorized
+ F_i = np.clip(mu_F + 0.1 * rng.standard_cauchy(pop_size), 0.1, 1.0)
+ CR_i = np.clip(mu_CR + 0.1 * rng.randn(pop_size), 0.0, 1.0)
+-mutants = pop + F_i[:, None] * (pop[pbest_indices] - pop) + F_i[:, None] * (pop[r1] - x_r2)
++
++# current-to-pbest/1 mutation (one array expression for ALL individuals)
++mutants = pop + F_i[:, None] * (pop[pbest_indices] - pop) + F_i[:, None] * (pop[r1] - r2_vec)
++
++# binomial crossover, vectorized
+ mask = rng.rand(pop_size, self.dim) < CR_i[:, None]
+ j_rand = rng.randint(0, self.dim, size=pop_size)
+ mask[np.arange(pop_size), j_rand] = True
+ trials = np.where(mask, mutants, pop)
+-# then evaluate trials and do selection (still vectorizable)
++
++# boundary repair, vectorized (reflect + clip)
++trials = np.where(trials < lb, lb + (lb - trials), trials)
++trials = np.where(trials > ub, ub - (trials - ub), trials)
++trials = np.clip(trials, lb, ub)
++
++# ---------- THE ONLY ALLOWED PYTHON LOOP ----------
++new_fitness = np.empty(pop_size)
++for i in range(pop_size):
++    new_fitness[i] = evaluate_problem(problem, trials[i])
++    evals += 1
++# ------------------------------------------------
++
++# selection, archive update, and F/CR success-history update (all vectorized/array ops)
++improved = new_fitness < fitness
++if np.any(improved):
++    if len(archive) == 0:
++        archive = pop[improved].copy()
++    else:
++        archive = np.vstack([archive, pop[improved]])
++    if len(archive) > archive_capacity:
++        archive = archive[-archive_capacity:]
++    pop[improved] = trials[improved]
++    fitness[improved] = new_fitness[improved]
++    # optional: update mu_F/mu_CR from successes
+ ```
+ 
+-This pattern runs in milliseconds even for 20D, while per-individual Python loops can take >120 seconds.
++This pattern runs in milliseconds for 20D, while per-individual Python loops took >120 seconds in earlier generations.
++
++## FILE READING / CONTEXT MANAGEMENT (PREVENT 'Output context exceeded')
++- Do NOT paste entire file contents into the chat. Use targeted `editor` views (e.g., `view_range`) or `sed -n` for small line ranges.
++- Read only the sections you need: the optimizer class, the `optimize` method, and the controller interface.
++- Keep your reasoning and tool calls concise; do not repeat large code blocks in text.
++- Previous generations failed with `Output context exceeded`; keep each message short and focused.
+ 
+ ## FINAL CHECKLIST (BEFORE SUBMITTING)
+ - [ ] I actually used `editor` with `str_replace` (REQUIRED)

@@ -1,0 +1,237 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 6b87a29..054294c 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -88,8 +88,14 @@ class DEOptimizer:
+         effective_seed = seed if seed is not None else _config_seed
+         rng = np.random.RandomState(effective_seed)
+ 
+-        # Initialize population - uniform random initialization
+-        pop = rng.uniform(lb, ub, (pop_size, self.dim))
++        # Initialize population - Latin Hypercube Sampling for better coverage
++        def _lhs(n, d, rng):
++            samples = np.empty((n, d))
++            for j in range(d):
++                samples[:, j] = (np.arange(n) + rng.random(n)) / n
++                rng.shuffle(samples[:, j])
++            return lb + samples * (ub - lb)
++        pop = _lhs(pop_size, self.dim, rng)
+         
+         # Evaluate initial population
+         evals = 0
+@@ -115,12 +121,13 @@ class DEOptimizer:
+         done = False
+         
+         # SHADE (Success-History Adaptive Differential Evolution) state
+-        memory_size = 5
++        memory_size = 10
+         memory_F = np.full(memory_size, 0.5)
+         memory_CR = np.full(memory_size, 0.5)
+         memory_idx = 0
+         archive = np.empty((0, self.dim))
+         archive_capacity = max(pop_size, 20)
++        no_improve_count = 0
+         
+         while not done:
+             iteration += 1
+@@ -135,10 +142,14 @@ class DEOptimizer:
+             # Optional controller override (still supported, but SHADE also adapts internally)
+             ctrl_F = float(params.get('F', self.F))
+             ctrl_CR = float(params.get('CR', self.CR))
++            # If controller provides values, bias SHADE memory sampling toward them
++            if self.controller is not None:
++                memory_F[:] = ctrl_F
++                memory_CR[:] = ctrl_CR
+             
+             progress = min(1.0, evals / max(1.0, self.max_evals))
+             # More exploitation as the budget is consumed
+-            pbest_p = max(0.05, 0.2 * (1.0 - progress))
++            pbest_p = max(0.05, max(0.25, 0.5 * (1.0 - progress)))
+             
+             prev_gbest_f = gbest_f
+             pop_old = pop.copy()
+@@ -233,6 +244,38 @@ class DEOptimizer:
+                 memory_CR[memory_idx] = float(np.mean(S_CR))
+                 memory_idx = (memory_idx + 1) % memory_size
+             
++            # Stagnation detection and diversity restart
++            if gbest_f < prev_gbest_f - 1e-12:
++                no_improve_count = 0
++            else:
++                no_improve_count += 1
++            
++            if no_improve_count >= 10 and evals < self.max_evals:
++                # Diversity restart: retain best 40%, reinitialize rest uniformly
++                no_improve_count = 0
++                keep = max(1, int(pop_size * 0.4))
++                sorted_keep = np.argsort(fitness)[:keep]
++                new_pop2 = np.empty_like(pop)
++                new_fit = np.full(pop_size, np.inf)
++                for j, idx in enumerate(sorted_keep):
++                    new_pop2[j] = pop[idx].copy()
++                    new_fit[j] = fitness[idx]
++                for j in range(keep, pop_size):
++                    new_pop2[j] = rng.uniform(lb, ub, self.dim)
++                pop = new_pop2.copy()
++                fitness = new_fit.copy()
++                pop_old = pop.copy()
++                for j in range(keep, pop_size):
++                    if evals >= self.max_evals:
++                        break
++                    fitness[j] = evaluate_problem(problem, pop[j])
++                    evals += 1
++                # Reset SHADE memory to more exploratory values after restart
++                memory_F[:] = 0.6
++                memory_CR[:] = 0.6
++                # Reset archive to keep it from interfering with new search direction
++                archive = np.empty((0, self.dim))
++            
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index dbe1b92..01ba422 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -132,10 +132,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(np.log(self.epsilon_start))
++        log_eps_end = float(np.log(self.epsilon_end))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(np.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.
+diff --git a/hyper_agent.py b/hyper_agent.py
+index ea8cd0c..25c3144 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -128,6 +128,23 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+ 
+ GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code.
++
++## ACTIONABLE FEEDBACK FROM PREVIOUS GENERATIONS
++
++When you analyze the previous generations, pay special attention to:
++
++1. **What the Task Agent actually changed** - Look at `all_patch.diff`. If it only tweaks parameters (w, c1, c2, F, CR, pop size), that's a FAILURE. Your job is to make the prompt force a bigger change.
++2. **Whether the patch compiles** - If `generate.log` shows `[TRAIN] Run X failed` or errors, add explicit instructions about what to fix.
++3. **Whether the Task Agent actually tried a new algorithm** - If it stayed on DE/PSO yet again, strengthen the requirement to try CMA-ES / SHADE / JADE / etc.
++
++Concrete textual changes you should make to the Task Agent prompt when you see repeated small tweaks:
++
++- Add: "PREVIOUS GENERATIONS HAVE ONLY TWEAKED PARAMETERS. THIS IS NOT ACCEPTABLE. YOU MUST CHANGE THE ALGORITHM ITSELF OR ADD A MAJOR MECHANISM."
++- Add: "If you are still using the same base algorithm as the previous generation with only parameter changes, your patch will be considered a failure."
++- Add: "The evaluation code in `/hada/domains/{domain}/dqn_de_util.py` expects the optimizer to have `optimize(problem, train, seed)` and expose `stats['gbest_f']` / `stats['initial_gbest_f']`. Keep that contract."
++- Add: "Prefer algorithms known to work well on BBOB: SHADE, L-SHADE, CMA-ES, JADE, or a hybrid. Do not stay on plain DE unless you add a major new mechanism (archive, pbest, restart, covariance adaptation)."
++
++Your own output must include an updated `task_agent.py` (via str_replace) that incorporates these lessons.
+ """
+ 
+         new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all', require_tool='str_replace')
+\ No newline at end of file
+diff --git a/task_agent.py b/task_agent.py
+index 0b1c2f7..a90d4a2 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -25,7 +25,48 @@ class TaskAgent(AgentSystem):
+                 - prediction (str): The prediction made by the agent.
+                 - new_msg_history (list): A list of messages representing the message history of the interaction.
+         """
+-        domain = inputs['domain']
++        domain = inputs.get('domain', 'unknown')
++        task_instruction = inputs.get('task_instruction', str(inputs))
++
++        # Inject critical meta-guidance into every task agent prompt.
++        # This is the primary lever for steering the Task Agent toward
++        # real algorithm changes rather than trivial parameter tweaks.
++        guidance = f"""
++## CRITICAL GUIDANCE FOR {domain.upper()} OPTIMIZATION
++
++You are an expert optimization algorithm researcher. You MUST make actual code modifications using the `editor` tool (str_replace). Do NOT simply describe changes.
++
++### 1. FIRST, READ THE DOMAIN EVALUATION CODE
++Before editing anything, open and read:
++- /hada/domains/{domain}/dqn_de_util.py (or the relevant util file in that folder)
++- /hada/metabbo/ec_algorithm.py
++
++Understand exactly how `evaluate_problem(problem, x)` is called and how the optimizer is instantiated. Keep the same external interface (class name, constructor signature, `optimize` method) unless you update all call sites.
++
++### 2. TRY A DIFFERENT EVOLUTIONARY ALGORITHM OR A MAJOR STRUCTURAL CHANGE
++Do NOT just tweak parameters. PREVIOUS GENERATIONS HAVE ONLY TWEAKED PARAMETERS AND THIS IS NOT ACCEPTABLE. Strongly prefer one of these:
++- Replace the current algorithm with a fundamentally different one (e.g., for bbob_unconstrained: SHADE, L-SHADE, CMA-ES, JADE, GLPSO, ES, etc. Prefer algorithms known to work well on BBOB.)
++- Add a significant new mechanism: success-history adaptation, archive, pbest mutation, covariance-matrix adaptation, restart strategy, migration, etc.
++- Change the meta-learning controller approach (e.g., PPO, Bayesian optimization, L2O) instead of only tuning DQN.
++
++If you are still using the same base algorithm as the previous generation with only parameter changes, your patch will be considered a failure.
++
++### 3. INCREMENTAL IMPROVEMENT
++Focus on ONE functional module this generation (e.g., only the evolutionary algorithm OR only the meta-learning controller OR only the population structure). Do not rewrite everything at once.
++
++### 4. VERIFY YOUR CODE BEFORE FINISHING
++After editing, run:
++python -m py_compile /hada/metabbo/ec_algorithm.py /hada/metabbo/param_controller.py /hada/metabbo/meta_learning.py
++Fix any syntax errors before finishing.
++
++### 5. CHECKLIST
++- [ ] All method/function calls reference existing code
++- [ ] No undefined variables/methods
++- [ ] Function signatures match their callers
++- [ ] Code can run without AttributeError/NameError
++- [ ] You actually called `editor` with `str_replace` at least once
++"""
++
+         instruction = f"""You are an agent.
+ 
+ Task input:
+@@ -33,13 +74,43 @@ Task input:
+ {inputs}
+ ```
+ 
++{guidance}
++
+ Respond in JSON format with the following schema:
+ <json>
+ {{
+     "response": ...
+ }}
+ </json>"""
+-        new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all')
++
++        new_msg_history = chat_with_agent(
++            instruction,
++            model=self.model,
++            msg_history=[],
++            logging=self.log,
++            tools_available='all',
++            multiple_tool_calls=True,
++            max_tool_calls=100,
++            require_tool='str_replace'
++        )
++
++        # Check whether the task agent actually made code edits.
++        made_edit = False
++        for msg in new_msg_history:
++            if not isinstance(msg, dict):
++                continue
++            text = msg.get('text', '')
++            try:
++                jsons = extract_jsons(text)
++                for j in (jsons or []):
++                    if isinstance(j, dict) and j.get('tool_name') == 'editor':
++                        ti = j.get('tool_input', {})
++                        if isinstance(ti, dict) and ti.get('command') in ('str_replace', 'create'):
++                            made_edit = True
++            except Exception:
++                pass
++        if not made_edit:
++            self.log("WARNING: Task agent did not make any str_replace/create edits.")
+ 
+         # Extract the response
+         prediction = "None"

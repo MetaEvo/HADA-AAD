@@ -1,0 +1,19 @@
+# AIHubMix configuration files
+litellm_config.yaml
+proxy_instruction.md
+start_litellm_proxy.sh
+
+# Virtual environment
+venv_nat/
+
+# Dataset files
+domains/paper_review/dataset_*.csv
+
+# Proofgrader submodule (ignore changes)
+proofgrader_repo/
+
+# Proofgrader submodule (ignore changes)
+proofgrader_repo/# Environment
+.env
+venv/
+__pycache__/

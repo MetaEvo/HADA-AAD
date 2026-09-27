@@ -1,0 +1,25 @@
+diff --git a/task_agent.py b/task_agent.py
+index 33375f6..cf43e5e 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -254,6 +254,20 @@ A structurally upgraded algorithm that is too slow will cause the evaluation to
+ - Keep archive operations cheap (simple append/truncate, not full scans).
+ - **MANDATORY smoke test before finishing**: run a quick 20D sphere test with 2000 evals and ensure it completes in <30 seconds.
+ 
++## MANDATORY STATIC CHECKS (RUN BEFORE SUBMITTING)
++
++**Gen_62 ignored the vectorized template and wrote per-individual Python loops again, scoring only 0.8549 (down from gen_50's 0.9289). This is the #1 recurring failure.**
++
++Before you submit, you MUST run these checks via bash and confirm all pass:
++
++```bash
++cd /hada/metabbo && echo '--- Checking for forbidden per-individual loops ---' && grep -n 'for i in range(pop_size)' ec_algorithm.py || echo 'OK: no forbidden loop'; grep -n 'for j in range(self.dim)' ec_algorithm.py || echo 'OK: no forbidden loop'; echo '--- Checking LPSR is present ---' && grep -n 'pop_min\|new_pop_size\|LPSR\|Linear Population' ec_algorithm.py || echo 'WARNING: LPSR NOT FOUND - SHADE/JADE without LPSR is REJECTED'; echo '--- Checking class/alias ---' && grep -n 'class DEOptimizer\|DEOptimizer =' ec_algorithm.py
++```
++
++If the grep finds `for i in range(pop_size)` or `for j in range(self.dim)` anywhere in the search loop, **STOP and rewrite using the vectorized NumPy pattern below**. Do not submit code that contains these loops.
++
++If you implement any JADE/SHADE-style algorithm and `LPSR`/`new_pop_size`/`pop_min` is not present, **STOP and add Linear Population Size Reduction** — SHADE/JADE without LPSR is a known non-improvement (gen_29=0.8875, gen_62=0.8549).
++
+ ## VECTORIZED IMPLEMENTATION PATTERN (USE THIS TO AVOID TIMEOUTS)
+ 
+ If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate all mutant vectors as a NumPy array:

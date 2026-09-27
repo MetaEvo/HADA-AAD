@@ -1,0 +1,213 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5fd2466..e50c8cc 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -77,6 +77,26 @@ class DEOptimizer:
+                 best_idx = idx
+         return best_idx
+ 
++    @staticmethod
++    def _reflect(x, lb, ub):
++        """Reflect out-of-bound coordinates back into [lb, ub].
++
++        This is often better than simple clipping for BBOB functions because
++        it preserves some of the momentum/direction of the point.
++        """
++        x = np.asarray(x, dtype=float)
++        lo = np.asarray(lb, dtype=float)
++        hi = np.asarray(ub, dtype=float)
++        width = hi - lo
++        # Reflect points that are too low
++        below = x < lo
++        x = np.where(below, 2.0 * lo - x, x)
++        # Reflect points that are too high
++        above = x > hi
++        x = np.where(above, 2.0 * hi - x, x)
++        # Safety clamp (handles pathological cases where the range is tiny)
++        return np.clip(x, lo, hi)
++
+     def optimize(self, problem, x0=None, train=True, seed=None) -> Tuple[list, Dict[str, Any]]:
+         if self.controller is not None:
+             self.controller.reset({'dim': self.dim, 'lower': self.lower_bounds, 'upper': self.upper_bounds, 'max_evals': self.max_evals})
+@@ -122,13 +142,15 @@ class DEOptimizer:
+         done = False
+         
+         # SHADE (Success-History Adaptive Differential Evolution) state
+-        memory_size = 5
++        memory_size = 10
+         memory_F = np.full(memory_size, 0.5)
+         memory_CR = np.full(memory_size, 0.5)
+         memory_idx = 0
+         archive = np.empty((0, self.dim))
+         archive_capacity = max(pop_size, 20)
+         stagnation_count = 0
++        local_search_interval = 20
++        local_search_n = max(1, min(3, pop_size // 10))
+         
+         while not done:
+             iteration += 1
+@@ -147,7 +169,20 @@ class DEOptimizer:
+             progress = min(1.0, evals / max(1.0, self.max_evals))
+             # More exploitation as the budget is consumed
+             pbest_p = max(0.05, 0.2 * (1.0 - progress))
+-            
++            # Allow the controller to override the pbest selection pressure
++            if 'pbest_p' in params:
++                pbest_p = float(np.clip(float(params['pbest_p']), 0.01, 1.0))
++
++            # L-SHADE style linear population size reduction
++            if iteration > 1 and pop_size > 4:
++                target_size = max(4, int(self.pop_size * (1.0 - 0.6 * progress)))
++                if target_size < pop_size:
++                    keep_idx = np.argsort(fitness)[:target_size]
++                    pop = pop[keep_idx].copy()
++                    fitness = fitness[keep_idx].copy()
++                    pop_size = int(target_size)
++                    archive_capacity = max(pop_size, 20)
++
+             prev_gbest_f = gbest_f
+             pop_old = pop.copy()
+             new_pop = np.copy(pop)
+@@ -207,7 +242,7 @@ class DEOptimizer:
+                 mask = rng.random(self.dim) < CR_i
+                 mask[j_rand] = True
+                 trial = np.where(mask, mutant, pop[i])
+-                trial = np.clip(trial, lb, ub)
++                trial = self._reflect(trial, lb, ub)
+                 new_pop[i] = trial
+             
+             # Evaluate trial vectors and apply greedy selection
+@@ -235,12 +270,37 @@ class DEOptimizer:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+             
+-            # Update SHADE memory with successful parameters
++            # Update SHADE memory with successful parameters (weighted Lehmer mean for F)
+             if len(S_F) > 0:
+-                memory_F[memory_idx] = float(np.mean(S_F))
+-                memory_CR[memory_idx] = float(np.mean(S_CR))
++                S_F_arr = np.asarray(S_F, dtype=float)
++                S_CR_arr = np.asarray(S_CR, dtype=float)
++                sum_F = float(np.sum(S_F_arr))
++                if sum_F > 0:
++                    memory_F[memory_idx] = float(np.sum(S_F_arr * S_F_arr) / sum_F)
++                else:
++                    memory_F[memory_idx] = float(np.mean(S_F_arr))
++                memory_CR[memory_idx] = float(np.mean(S_CR_arr))
+                 memory_idx = (memory_idx + 1) % memory_size
+-            
++
++            # Local search around the current best solution to accelerate convergence
++            if (iteration >= local_search_interval and iteration % local_search_interval == 0
++                    and evals < self.max_evals):
++                # Perturbation scale decreases as the run progresses
++                sigma_local = (ub - lb) * max(1e-7, 0.01 * (1.0 - 0.5 * progress))
++                for _ in range(local_search_n):
++                    if evals >= self.max_evals:
++                        break
++                    cand = self._reflect(gbest + sigma_local * rng.randn(self.dim), lb, ub)
++                    cand_f = evaluate_problem(problem, cand)
++                    evals += 1
++                    if cand_f < gbest_f:
++                        gbest_f = cand_f
++                        gbest = cand.copy()
++                        # Replace the worst individual with this improved point
++                        worst_i = int(np.argmax(fitness))
++                        pop[worst_i] = cand.copy()
++                        fitness[worst_i] = cand_f
++
+             # Stagnation detection: restart worst individuals if no improvement for several iterations
+             if gbest_f < prev_gbest_f - 1e-12:
+                 stagnation_count = 0
+@@ -255,7 +315,7 @@ class DEOptimizer:
+                     if evals >= self.max_evals:
+                         break
+                     if rng.random() < 0.5:
+-                        pop[idx] = np.clip(gbest + sigma * rng.randn(self.dim), lb, ub)
++                        pop[idx] = self._reflect(gbest + sigma * rng.randn(self.dim), lb, ub)
+                     else:
+                         pop[idx] = rng.uniform(lb, ub, self.dim)
+                     fitness[idx] = evaluate_problem(problem, pop[idx])
+diff --git a/metabbo/meta_learning.py b/metabbo/meta_learning.py
+index 901fe26..47a25a2 100644
+--- a/metabbo/meta_learning.py
++++ b/metabbo/meta_learning.py
+@@ -63,10 +63,14 @@ class DQNController(ParamController):
+             raise RuntimeError('torch is required for DQNController')
+         self.device = torch.device(device)
+         self.obs_dim = obs_dim
+-        self.action_dim = 2  # F, CR
++        self.action_dim = 3  # F, CR, pbest_p
+         self.net = _Net(self.obs_dim, self.action_dim).to(self.device)
+         if model_path and os.path.exists(model_path):
+-            self.load(model_path)
++            try:
++                self.load(model_path)
++            except Exception:
++                # Ignore incompatible old model files; use freshly initialized network
++                pass
+ 
+     def reset(self, problem_meta: Dict[str, Any]) -> None:
+         return None
+@@ -115,8 +119,17 @@ class DQNController(ParamController):
+         except Exception:
+             cr_sig = 0.9
+         CR = 0.0 + (1.0 - 0.0) * cr_sig
+-        
+-        return {'F': float(F), 'CR': float(CR)}
++
++        # Map pbest_p (fraction of top individuals used for current-to-pbest/1)
++        # to [0.03, 1.0]; smaller values mean more aggressive exploitation
++        try:
++            p_raw = float(out[2])
++            p_sig = 1.0 / (1.0 + float(np.exp(-p_raw)))
++        except Exception:
++            p_sig = 0.2
++        pbest_p = 0.03 + (1.0 - 0.03) * p_sig
++
++        return {'F': float(F), 'CR': float(CR), 'pbest_p': float(pbest_p)}
+ 
+     def save(self, path: str):
+         torch.save(self.net.state_dict(), path)
+@@ -166,11 +179,14 @@ class DiscreteDQNController(ParamController):
+         # DE parameter discretization
+         self.F_vals = np.linspace(0.1, 1.0, self.bins)
+         self.CR_vals = np.linspace(0.0, 1.0, self.bins)
++        # pbest_p controls the size of the elite set used in current-to-pbest/1
++        self.PBEST_vals = np.linspace(0.05, 0.5, self.bins)
+ 
+         self.actions = []
+         for fi in self.F_vals:
+             for cri in self.CR_vals:
+-                self.actions.append({'F': float(fi), 'CR': float(cri)})
++                for pp in self.PBEST_vals:
++                    self.actions.append({'F': float(fi), 'CR': float(cri), 'pbest_p': float(pp)})
+         self.n_actions = len(self.actions)
+         
+         # 使用种子初始化网络
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 01ba422..0422f8e 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -65,7 +65,9 @@ class DummyHeuristicController(ParamController):
+         # Also support DE-style parameters for multi-objective DE optimizers
+         F = 0.9 - 0.5 * t  # Large mutation early, refined late
+         CR = 0.9 - 0.4 * t # More crossover early for diversity
+-        return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR}
++        # Increase exploitation pressure (smaller pbest set) as the run progresses
++        pbest_p = max(0.05, 0.2 * (1.0 - t))
++        return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR, 'pbest_p': pbest_p}
+ 
+ 
+ class AdaptiveDEController(ParamController):
+@@ -143,5 +145,7 @@ class AdaptiveDEController(ParamController):
+         if current_gbest_cv is not None and t > 0.5 and current_gbest_cv > epsilon:
+             epsilon = max(epsilon, min(current_gbest_cv * 0.5, self.epsilon_start))
+ 
++        # Increase pbest exploitation pressure as the run progresses
++        pbest_p = max(0.05, 0.2 * (1.0 - t))
+         return {'F': float(F), 'CR': float(CR), 'strategy': strategy,
+-                'epsilon': float(epsilon)}
+\ No newline at end of file
++                'epsilon': float(epsilon), 'pbest_p': pbest_p}
+\ No newline at end of file

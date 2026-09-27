@@ -1,0 +1,355 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..53085f8 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -88,8 +88,15 @@ class DEOptimizer:
+         effective_seed = seed if seed is not None else _config_seed
+         rng = np.random.RandomState(effective_seed)
+ 
+-        # Initialize population - uniform random initialization
+-        pop = rng.uniform(lb, ub, (pop_size, self.dim))
++        # Initialize population - Latin Hypercube Sampling for better coverage
++        if pop_size > 1:
++            samples = np.empty((pop_size, self.dim))
++            for j in range(self.dim):
++                perm = rng.permutation(pop_size)
++                samples[:, j] = (perm + rng.random(pop_size)) / pop_size
++            pop = lb + samples * (ub - lb)
++        else:
++            pop = rng.uniform(lb, ub, (pop_size, self.dim))
+         
+         # Evaluate initial population
+         evals = 0
+@@ -113,7 +120,21 @@ class DEOptimizer:
+         # Main loop
+         iteration = 0
+         done = False
+-        
++
++        # Archive for JADE/SHADE-style mutation
++        archive = np.empty((0, self.dim), dtype=float)
++        max_archive_size = pop_size
++
++        # SHADE parameter memory for adaptive F and CR
++        memory_size = 10
++        memory_F = np.full(memory_size, self.F)
++        memory_CR = np.full(memory_size, self.CR)
++        memory_idx = 0
++
++        # Per-individual F and CR used during this generation
++        F_ind = np.full(pop_size, self.F)
++        CR_ind = np.full(pop_size, self.CR)
++
+         while not done:
+             iteration += 1
+             params = dict(self.params)
+@@ -124,51 +145,136 @@ class DEOptimizer:
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+             
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
++            F_base = float(params.get('F', self.F))
++            CR_base = float(params.get('CR', self.CR))
++            # On the first generation, seed the SHADE memory with controller values
++            if iteration == 1:
++                memory_F[:] = F_base
++                memory_CR[:] = CR_base
+             
+             prev_gbest_f = gbest_f
+-            
++
++            # Sorted indices for pbest selection (current-to-pbest/1)
++            sorted_idx = np.argsort(fitness)
++            pbest_n = max(2, int(pop_size * 0.2))
++            pbest_pool = sorted_idx[:pbest_n]
++
+             # Generate trial vectors
+             new_pop = np.copy(pop)
++            S_F, S_CR, S_delta = [], [], []
++
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
++                # Sample F and CR from SHADE memory with small perturbation
++                k = int(rng.randint(memory_size))
++                F_i = memory_F[k] + 0.1 * rng.randn()
++                while F_i <= 0.0:
++                    F_i = memory_F[k] + 0.1 * rng.randn()
++                F_i = min(1.0, F_i)
++
++                CR_i = memory_CR[k] + 0.1 * rng.randn()
++                if CR_i < 0.0:
++                    CR_i = 0.0
++                elif CR_i > 1.0:
++                    CR_i = 1.0
++
++                F_ind[i] = F_i
++                CR_ind[i] = CR_i
++
++                # current-to-pbest/1 mutation
++                pbest_idx = int(pbest_pool[rng.randint(len(pbest_pool))])
++
++                candidates = [idx for idx in range(pop_size) if idx != i and idx != pbest_idx]
++                if len(candidates) == 0:
++                    r1 = i
++                else:
++                    r1 = int(candidates[rng.randint(len(candidates))])
++
++                if archive.shape[0] > 0 and rng.random() < 0.5:
++                    r2 = int(rng.randint(archive.shape[0]))
++                    mutant = (pop[i] + F_i * (pop[pbest_idx] - pop[i]) +
++                              F_i * (pop[r1] - archive[r2]))
+                 else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
+-                
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
+-                
+-                # Mutation and crossover
+-                j_rand = rng.randint(0, self.dim)
++                    candidates2 = [idx for idx in range(pop_size)
++                                   if idx != i and idx != pbest_idx and idx != r1]
++                    if len(candidates2) == 0:
++                        r2 = int(rng.randint(pop_size))
++                    else:
++                        r2 = int(candidates2[rng.randint(len(candidates2))])
++                    mutant = (pop[i] + F_i * (pop[pbest_idx] - pop[i]) +
++                              F_i * (pop[r1] - pop[r2]))
++
++                # Binomial crossover (always at least one component from the mutant)
++                trial = pop[i].copy()
++                j_rand = int(rng.randint(self.dim))
+                 for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
+-                
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
+-            
+-            # Evaluate trial vectors
++                    if rng.random() < CR_i or j == j_rand:
++                        trial[j] = mutant[j]
++
++                # Boundary handling: reflection, with clipping fallback
++                oob_low = trial < lb
++                oob_high = trial > ub
++                trial[oob_low] = 2.0 * lb[oob_low] - trial[oob_low]
++                trial[oob_high] = 2.0 * ub[oob_high] - trial[oob_high]
++                if np.any(trial < lb) or np.any(trial > ub):
++                    trial = np.clip(trial, lb, ub)
++
++                new_pop[i] = trial
++
++            # Evaluate trial vectors and perform greedy selection
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+                     break
+                 trial_f = evaluate_problem(problem, new_pop[i])
+                 evals += 1
+-                
+-                # Greedy selection
++
+                 if trial_f < fitness[i]:
++                    old_fitness_i = float(fitness[i])
++                    # Add replaced vector to the archive
++                    if archive.shape[0] < max_archive_size:
++                        archive = np.vstack([archive, pop[i]])
++                    elif archive.shape[0] > 0:
++                        archive[int(rng.randint(archive.shape[0]))] = pop[i]
++
+                     pop[i] = new_pop[i].copy()
+                     fitness[i] = trial_f
++                    S_F.append(F_ind[i])
++                    S_CR.append(CR_ind[i])
++                    S_delta.append(abs(old_fitness_i - trial_f))
++
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+-            
+-            # Compute reward: 1 if improved, 0 otherwise
+-            improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+-            
++
++            # Update SHADE memory using successful parameter values
++            if len(S_F) > 0:
++                S_F_arr = np.asarray(S_F, dtype=float)
++                S_CR_arr = np.asarray(S_CR, dtype=float)
++                delta_arr = np.asarray(S_delta, dtype=float)
++                delta_arr = np.maximum(delta_arr, 1e-12)
++                weights = delta_arr / np.sum(delta_arr)
++
++                if len(S_F) > 1:
++                    num_F = np.sum(weights * S_F_arr * S_F_arr)
++                    den_F = max(np.sum(weights * S_F_arr), 1e-12)
++                    mean_F = num_F / den_F
++                    mean_CR = float(np.sum(weights * S_CR_arr))
++                else:
++                    mean_F = float(S_F_arr[0])
++                    mean_CR = float(S_CR_arr[0])
++
++                memory_F[memory_idx] = float(np.clip(mean_F, 0.0, 1.0))
++                memory_CR[memory_idx] = float(np.clip(mean_CR, 0.0, 1.0))
++                memory_idx = (memory_idx + 1) % memory_size
++
++            # Continuous normalized improvement reward
++            if prev_gbest_f == 0.0:
++                improved = 1.0 if gbest_f < prev_gbest_f else 0.0
++            elif np.isfinite(prev_gbest_f) and np.isfinite(gbest_f):
++                improved = max(0.0, min(1.0, (prev_gbest_f - gbest_f) / abs(prev_gbest_f)))
++            else:
++                improved = 1.0 if gbest_f < prev_gbest_f else 0.0
++
+             # Store transition in controller's replay buffer
+             if self.controller is not None and train:
+                 next_obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 
+@@ -176,7 +282,7 @@ class DEOptimizer:
+                 done = (evals >= self.max_evals)
+                 if hasattr(self.controller, 'store_reward'):
+                     self.controller.store_reward(improved, next_obs, done)
+-            
++
+             done = (evals >= self.max_evals)
+ 
+         self.stats = {
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..0fa05a8 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -44,19 +44,32 @@ class StaticController(ParamController):
+ 
+ 
+ class DummyHeuristicController(ParamController):
+-    """A tiny heuristic that decays inertia weight and adjusts
+-    cognitive/social coefficients based on progress."""
+-    def __init__(self, w_start=0.9, w_end=0.4, decay_iters=100):
++    """A heuristic controller that adapts PSO/DE parameters based on progress
++    and detects stagnation to inject extra diversity when needed.
++
++    - Early iterations: high inertia/mutation and high diversity.
++    - Late iterations: lower inertia/mutation for exploitation.
++    - If the best fitness has not improved for several iterations, F/w are
++      temporarily increased to escape local optima.
++    """
++    def __init__(self, w_start=0.9, w_end=0.4, decay_iters=100,
++                 stagnation_boost=0.2, stagnation_threshold=5):
+         self.w_start = w_start
+         self.w_end = w_end
+         self.decay_iters = decay_iters
++        self.stagnation_boost = stagnation_boost
++        self.stagnation_threshold = stagnation_threshold
+ 
+     def reset(self, problem_meta: Dict[str, Any]) -> None:
+         self.it = 0
++        self.last_gbest = None
++        self.stagnation_count = 0
+ 
+     def step(self, observation: Dict[str, Any]) -> Dict[str, float]:
+         self.it = observation.get('iteration', self.it + 1)
+-        t = min(1.0, float(self.it) / max(1, self.decay_iters))
++        max_iter = max(1, int(observation.get('max_evals', 10000) / 100))
++        t = min(1.0, float(self.it) / max_iter)
++
+         w = self.w_start * (1 - t) + self.w_end * t
+         # Encourage exploration early, exploitation later
+         c1 = 1.8 * (1.0 - 0.5 * t)
+@@ -64,6 +77,22 @@ class DummyHeuristicController(ParamController):
+         # Also support DE-style parameters for multi-objective DE optimizers
+         F = 0.9 - 0.5 * t  # Large mutation early, refined late
+         CR = 0.9 - 0.4 * t # More crossover early for diversity
++
++        # Detect stagnation and add a temporary diversity boost
++        current_gbest = observation.get('gbest_f', None)
++        if current_gbest is not None and self.last_gbest is not None:
++            if current_gbest < self.last_gbest - 1e-12:
++                self.stagnation_count = 0
++            else:
++                self.stagnation_count += 1
++        self.last_gbest = current_gbest
++
++        if self.stagnation_count > self.stagnation_threshold:
++            w = min(1.0, w + self.stagnation_boost)
++            F = min(1.0, F + self.stagnation_boost)
++            CR = min(1.0, CR + self.stagnation_boost)
++            self.stagnation_count = 0
++
+         return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR}
+ 
+ 
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 26e6bef..2c154b5 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -159,6 +159,10 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ 4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
+ 
++5. **DISTINGUISH PARTIAL STRUCTURAL PROGRESS FROM PARAMETER TWEAKS** - CRITICAL.
++   A diff that replaces baseline DE with plain SHADE (success-history memory, current-to-pbest/1 mutation, external archive) is **GOOD structural progress**, even if the score is below the best. In that case the next generation's prompt should say: "Gen_N made the RIGHT structural move (SHADE) but scored X because it is MISSING the following L-SHADE pieces: (a) LPSR shrinking current_n linearly with progress, (b) stagnation-triggered restart of worst individuals. YOUR #1 JOB is to add those two missing mechanisms."
++   Also remember: each generation STARTS FRESH from baseline DE - the working tree does NOT persist previous generations' SHADE code. So if the new prompt says "the file already has SHADE, just add LPSR", the Task Agent will look at the file, see baseline DE, and get confused. The prompt must say "Your starting point is baseline DE. Implement the FULL L-SHADE (all 5 components) in one go."
++
+ Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+ 
+ GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code.
+diff --git a/hyper_agent_improvements.md b/hyper_agent_improvements.md
+index 8cdfcfb..1080afa 100644
+--- a/hyper_agent_improvements.md
++++ b/hyper_agent_improvements.md
+@@ -18,3 +18,22 @@
+ - Prior generations plateaued because Task Agents only tweaked PSO/DE parameter values instead of replacing the algorithm.
+ - When Task Agents finally attempted structural changes (L-SHADE), the first implementation was too slow (nested Python loops) and timed out, scoring zero.
+ - These prompt changes should push future Task Agents to: (1) actually replace the search algorithm, and (2) do so with vectorized NumPy code that runs fast enough to pass the evaluation timeout.
++
++---
++
++## Update 2026-08-29 (gen_63 preparation, domain: bbob_unconstrained)
++
++### Analysis
++- **Latest generation (gen_62) score**: 0.8549
++- **Task Agent's change in gen_62**: Replaced baseline DE with **plain SHADE** (success-history memory, current-to-pbest/1 mutation, external archive, weighted Lehmer mean updates). This is **GOOD structural progress** but scored below the 0.93121 best from gen_11's full **L-SHADE**.
++- **Root cause of the gap**: gen_62's plain SHADE was missing (a) **Linear Population Size Reduction (LPSR)** and (b) **stagnation-triggered restart**.
++
++### Changes made
++1. **task_agent.py**: Added a "LATEST GENERATION ANALYSIS" section that clearly tells the Task Agent:
++   - gen_62's plain SHADE was good but incomplete; the winning gen_11 L-SHADE had 5 specific components (listed with the exact LPSR formula).
++   - The working tree starts from **baseline DE** each generation (previous SHADE does NOT persist) - correcting a dangerous misconception.
++   - "YOUR #1 PRIORITY THIS GENERATION: Implement the FULL L-SHADE (all 5 components) in one go."
++
++2. **hyper_agent.py**: Added ANALYSIS GUIDANCE item #5 - **DISTINGUISH PARTIAL STRUCTURAL PROGRESS FROM PARAMETER TWEAKS**:
++   - Plain SHADE replacing DE is GOOD progress; next prompt should say "Gen_N made the RIGHT structural move but scored X because it is MISSING these L-SHADE pieces..."
++   - Warns future Meta Agents that each generation starts fresh from baseline DE, so never say "just add LPSR to existing SHADE".
+diff --git a/task_agent.py b/task_agent.py
+index cf34c9d..a58ceae 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -88,10 +88,26 @@ The **BEST-KNOWN SCORE is 0.93121** achieved by **generation 11's L-SHADE implem
+ 
+ **READ THAT DIFF FIRST.** It shows exactly what a winning structural change looks like: SHADE memory (memory_F/memory_CR), current-to-pbest/1 mutation, external archive, LPSR (shrinking population via `current_n`), and restart on stagnation.
+ 
++### 🎯 LATEST GENERATION ANALYSIS (gen_62 => score 0.8549):
++The most recent Task Agent implemented **plain SHADE** correctly (success-history memory, current-to-pbest/1 mutation, external archive, weighted Lehmer mean updates). **That is GOOD progress** - but it scored **0.8549**, which is still **BELOW the 0.93121 best** (gen_11's full L-SHADE).
++
++**IMPORTANT - YOUR ACTUAL STARTING POINT:** The current `/hada/metabbo/ec_algorithm.py` in your working tree is the **BASELINE DE** (fixed F=0.5/CR=0.5, rand/1 mutation, tournament selection, greedy selection). The previous SHADE implementation does NOT persist across generations - you start fresh from baseline DE each time. So do NOT assume SHADE is already there.
++
++**THE GEN_11 WINNER HAD ALL OF THESE (score 0.93121):**
++1. **SHADE success-history memory** - `memory_F`/`memory_CR` arrays (size ~10), per-individual F sampled from Cauchy around `memory_F[r]`, CR sampled from Gaussian around `memory_CR[r]`, and memory updated with weighted Lehmer mean of successful F and weighted mean of successful CR.
++2. **current-to-pbest/1 mutation** - `mutant = pop[i] + F_i * (pbest_x - pop[i]) + F_i * (pop[r1] - x_r2)` where `pbest_x` is randomly chosen from the top `p` fraction (p ~ 0.1-0.2), r1 from population, r2 from population-or-archive.
++3. **External archive** - rejected parents are stored in a bounded archive (capacity ~2*pop_size) and used as `x_r2`.
++4. **Linear Population Size Reduction (LPSR)** - shrink `current_n` linearly as `progress = evals/max_evals` increases:
++   `target_n = max(min_pop_size, int(round(pop_size + (min_pop_size - pop_size) * progress)))`
++   then removes the worst individuals to reach `target_n`.
++5. **Stagnation-triggered restart** - reinitialize ~15% of the worst individuals (small Gaussian perturbation around their current positions) when `gbest_f` has not improved for ~5 iterations.
++
++**YOUR #1 PRIORITY THIS GENERATION: Implement the FULL L-SHADE (all 5 components above) in one go**, because your starting point is baseline DE. Gen_62's plain SHADE scored 0.8549 precisely because it was missing components 4 and 5. If for some reason the working tree already has SHADE memory + archive + pbest but lacks LPSR/restart, then just ADD those two missing mechanisms.
++
+ ### ⚠️ NEW FAILURE MODE TO AVOID (gen_17 regression):
+ **Making constants configurable via the controller is NOT a structural change.** In gen_17, a Task Agent took an existing JADE implementation and only changed hardcoded values (`0.2` pbest pool → `params.get('pbest_rate', 0.2)`) to be controller-driven. This scored **0.8157**, far BELOW the best 0.93121. Do NOT repeat this - plumbing parameters from the controller to existing constants does NOT improve the algorithm.
+ 
+-**Your job is to make the algorithm itself better.** If the current file is baseline DE, implement L-SHADE (see gen_11 diff). If L-SHADE is already present, add a NEW mechanism on top:
++**Your job is to make the algorithm itself better.** If the current file is baseline DE, implement L-SHADE (see gen_11 diff). If the current file is plain SHADE (memory + archive + pbest) but lacks LPSR/restart, ADD LPSR and stagnation restart (per gen_11). If L-SHADE is already fully present, add a NEW mechanism on top:
+ - **Linear Population Size Reduction (LPSR)** - shrink population linearly each generation (this was in gen_11 and helped)
+ - **Restart when diversity collapses** - if mean pairwise distance < epsilon, reinitialize worst 80% keeping best
+ - **Local search / hill-climbing** - refine the best individual every K generations

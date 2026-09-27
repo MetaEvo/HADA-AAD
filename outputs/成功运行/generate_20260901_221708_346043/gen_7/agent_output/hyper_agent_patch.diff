@@ -1,0 +1,165 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 7216f67..2b79b28 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -153,6 +153,12 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+ 
+ GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code.
++
++TECHNICAL WARNING ABOUT F-STRING BRACES (this caused the gen_6 crash):
++- The task_agent.py `system_prompt` is an f-string (`f"""`). If the meta agent's generated patch inserts a literal `{{domain}}`, `{{algo_guidance}}`, or any other single-braced placeholder into that f-string, Python will try to evaluate it as a variable and crash with `NameError: name 'domain' is not defined`.
++- Therefore, any patch to task_agent.py that needs to show a literal curly-brace placeholder in the prompt text MUST write it as `{{{{domain}}}}` (double braces in the final source) in the task_agent.py source.
++- Before finishing, grep your modified task_agent.py for single `{{` that is not part of an existing f-string expression like `{{inputs}}`, `{{domain}}`, `{{system_prompt}}`, `{{self.model}}`, etc., and double those braces.
++- ALSO: this very instruction is inside an f-string, so any literal placeholder here MUST be written with quadruple braces in the source (e.g. `{{{{domain}}}}`), which renders to `{{domain}}` in the text and prevents a NameError crash.
+ """
+ 
+         new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all', require_tool='str_replace')
+\ No newline at end of file
+diff --git a/task_agent.py b/task_agent.py
+index 91df38f..f34b0e1 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -72,42 +72,99 @@ So your modified `ec_algorithm.py` MUST still provide:
+ - The returned `stats_dict` MUST contain keys `'gbest_f'` and `'initial_gbest_f'`
+ - Each function evaluation MUST increment `evals` and stop when `evals >= self.max_evals`
+ 
+-## WHAT TO IMPROVE (be aggressive - try completely different algorithms):
+-The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. The baseline score is ~0.88 on BBOB. You can improve dramatically by:
+-
+-**Try these algorithm upgrades (in order of expected impact):**
+-1. **SHADE / L-SHADE**: Success-History based Adaptive DE - CEC competition winner, adapts F and CR per-individual
+-2. **JADE**: Adaptive DE with external archive and current-to-pbest mutation
+-3. **CMA-ES**: Covariance Matrix Adaptation Evolution Strategy - state-of-the-art for continuous black-box optimization
+-4. **Hybrid DE variants**: Add mechanisms like opposition-based learning, restart, local search, diversity maintenance
+-5. **Improved initialization**: Latin Hypercube Sampling, Sobol sequence, or opposite-based initialization
+-
+-**Structural changes you can make:**
+-- Replace the `DEOptimizer` internals with a completely different algorithm (SHADE, JADE, CMA-ES) while keeping the same class/method interface
+-- Add an external archive for storing inferior solutions (JADE-style)
+-- Implement parameter adaptation (SHADE-style success-history memory)
+-- Add population restart when diversity drops
+-- Add local search / hill-climbing as a final refinement
+-- Change population sizing, mutation strategies, crossover schemes
+-
+-**Meta-learning improvements:**
+-- The `controller` object passed to `__init__` implements a `step(obs)` method returning a dict of parameters (e.g., {{'F': ..., 'CR': ...}}). You can use these parameters in your algorithm.
+-- Improve the meta_learning.py controller architecture if needed (e.g., different state features, action space, NN architecture)
++## CRITICAL: YOU MUST TRY A DIFFERENT ALGORITHM - NOT PARAMETER TWEAKS
++The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. The baseline score is ~0.88 on BBOB. **Simply changing the values of F, CR, population size, or adding small perturbations is considered a FAILURE.** You MUST implement a fundamentally different algorithm or a major new mechanism.
++
++**Required algorithm choices (pick ONE and implement it fully):**
++1. **CMA-ES**: Covariance Matrix Adaptation Evolution Strategy (state-of-the-art for continuous optimization). Implement the full CMA-ES update: sample from multivariate normal, rank-μ update of mean, rank-one + rank-μ covariance update, step-size adaptation via cumulative path length.
++2. **SHADE / L-SHADE**: Success-History based Adaptive DE. Maintain memory arrays `M_F` and `M_CR` (size H=6), sample per-individual F from Cauchy and CR from Normal, use current-to-pbest mutation, external archive, success-based memory update with Lehmer mean. If adding L-SHADE, also implement Linear Population Size Reduction.
++3. **JADE**: Adaptive DE with external archive, current-to-pbest mutation, and per-individual F/CR adaptation.
++4. **A completely different metaheuristic** (PSO with dynamic neighborhood, Genetic Algorithm with novel crossover, Evolution Strategy with CMA, etc.)
++
++**What counts as a MAJOR MECHANISM (acceptable):**
++- External archive (JADE-style)
++- Success-history parameter adaptation (SHADE-style)
++- Population restart / re-initialization on stagnation
++- Linear Population Size Reduction (L-SHADE)
++- Local search / hill-climbing hybridization
++- Opposition-based learning
++- Population diversity maintenance / crowding
++- Completely new optimizer class aliased to `DEOptimizer`
++
++**What does NOT count (UNACCEPTABLE - do not waste your generation):**
++- Changing F from 0.5 to 0.3
++- Adding a turbulence/perturbation factor
++- Changing initialization distribution
++- Tweaking boundary handling
++- Changing swarm_size from 40 to 50
++
++## CONCRETE IMPLEMENTATION TEMPLATES
++
++### CMA-ES skeleton (you must fill in the details):
++```python
++class DEOptimizer:
++    def __init__(self, dim, lower_bounds, upper_bounds, max_evals, params=None, controller=None, recorder=None, swarm_size=None):
++        # ... same setup as current __init__ ...
++        pass
++
++    def optimize(self, problem, x0=None, train=True, seed=None):
++        n = self.dim
++        lb = self.lower_bounds
++        ub = self.upper_bounds
++        sigma = 0.2 * (ub[0] - lb[0]) if np.all(ub > lb) else 1.0
++        m = np.clip(rng.uniform(lb, ub), lb, ub) if x0 is None else np.asarray(x0, float)
++        C = np.eye(n)
++        p_s = np.zeros(n)
++        p_c = np.zeros(n)
++        # Set CMA hyperparameters: lambda_, mu, weights, mueff, cc, cs, c1, cmu, damps
++        # Main loop:
++        #   sample pop = m + sigma * (C_cholesky @ randn(n, lambda_)).T
++        #   clip to bounds, evaluate all, sort
++        #   track gbest_f / initial_gbest_f
++        #   update m (weighted mean of top mu)
++        #   update p_c, p_s (cumulative paths)
++        #   update C (rank-one + rank-mu)
++        #   update sigma (exp(cs/damps * (norm(p_s)/chi_n - 1)))
++        #   until evals >= max_evals
++        return gbest_list, self.stats
++```
++
++### SHADE memory update (inside DE loop):
++```python
++# Success-based memory update (after each generation where S_F and S_CR are non-empty)
++if len(S_F) > 0:
++    w = np.array([df / sum(S_F_diff) for df in S_F_diff])  # weights by improvement
++    M_F[memory_idx] = np.sum(w * np.array(S_F)**2) / np.sum(w * np.array(S_F))  # Lehmer mean
++    M_CR[memory_idx] = np.sum(w * np.array(S_CR))
++    memory_idx = (memory_idx + 1) % self.memory_size
++    S_F = []; S_CR = []; S_F_diff = []
++```
+ 
+ ## MANDATORY WORKFLOW - FOLLOW THESE STEPS:
+ 1. **READ the domain code**: Use editor view on `/hada/domains/{domain}/dqn_de_util.py` to understand exactly how your code is called and scored
+ 2. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py`
+ 3. **READ the meta-learning code**: Use editor view on `/hada/metabbo/meta_learning.py`
+-4. **MAKE your changes**: Use editor str_replace to actually modify the code files
+-5. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
+-6. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++4. **READ your previous changes**: If there is a all_patch.diff in the eval folder, read it to avoid repeating the same change
++5. **MAKE your changes**: Use editor str_replace to actually modify the code files. You MUST make at least one str_replace call to `/hada/metabbo/ec_algorithm.py`.
++6. **VERIFY syntax**: Run `python -m py_compile /hada/metabbo/ec_algorithm.py`
++7. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++8. **VERIFY logic**: Ensure no undefined variables or methods; check that all helper methods are defined before use
++
++## FINAL CHECKLIST (BEFORE FINISHING):
++- [ ] I actually used the `editor` tool with `command='str_replace'` to modify `/hada/metabbo/ec_algorithm.py` (or created a new file that gets imported).
++- [ ] I implemented a NEW algorithm class or a MAJOR mechanism (archive, LPSR, restart, memory adaptation), not just constant tuning.
++- [ ] `DEOptimizer` class exists (or is aliased) with compatible constructor.
++- [ ] `optimize()` returns `(gbest_list, stats_dict)` with at least `gbest_f` and `initial_gbest_f`.
++- [ ] All method/function calls reference existing code (no AttributeError / NameError).
++- [ ] Code compiles with `python -m py_compile /hada/metabbo/ec_algorithm.py`.
++- [ ] I did NOT modify any file under `/hada/domains/` (protected).
+ 
+ ## REMEMBER:
+ - The evaluation code CANNOT be modified. It expects `DEOptimizer` class with the interface above.
+ - If you introduce a new helper method or class, define it BEFORE using it.
+ - Do NOT call methods that don't exist.
+ - Your changes must be syntactically valid Python.
+-- Make meaningful structural changes to the algorithm - not just parameter tweaks.
++- **Every generation MUST produce a useful, structurally meaningful code change.**
+ 
+ Now here is the specific task input:
+ """
+@@ -123,7 +180,16 @@ Respond in JSON format with the following schema:
+     "response": ...
+ }}
+ </json>"""
+-        new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all')
++        new_msg_history = chat_with_agent(
++            instruction,
++            model=self.model,
++            msg_history=[],
++            logging=self.log,
++            tools_available='all',
++            multiple_tool_calls=True,
++            max_tool_calls=100,
++            require_tool='str_replace'
++        )
+ 
+         # Extract the response
+         prediction = "None"

@@ -1,0 +1,273 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..2c0bf9d 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -88,8 +88,17 @@ class DEOptimizer:
+         effective_seed = seed if seed is not None else _config_seed
+         rng = np.random.RandomState(effective_seed)
+ 
+-        # Initialize population - uniform random initialization
+-        pop = rng.uniform(lb, ub, (pop_size, self.dim))
++        # Latin Hypercube initialization for better space coverage
++        lhs = np.empty((pop_size, self.dim))
++        for j in range(self.dim):
++            u = (rng.rand(pop_size) + np.arange(pop_size)) / pop_size
++            p = rng.permutation(pop_size)
++            lhs[:, j] = u[p]
++        pop = lb + lhs * (ub - lb)
++        if x0 is not None:
++            x0_arr = np.asarray(x0, dtype=float).flatten()
++            if x0_arr.shape[0] == self.dim:
++                pop[0] = np.clip(x0_arr, lb, ub)
+         
+         # Evaluate initial population
+         evals = 0
+@@ -110,6 +119,16 @@ class DEOptimizer:
+         initial_population_positions = pop.copy()
+         initial_population_fitness = fitness.copy()
+ 
++        # JADE/SHADE state
++        archive = np.empty((0, self.dim), dtype=float)
++        archive_capacity = max(pop_size * 2, 20)
++        H = 6
++        memory_F = np.full(H, self.F)
++        memory_CR = np.full(H, self.CR)
++        mem_idx = 0
++        c = 0.1
++        prev_gbest_f = gbest_f
++
+         # Main loop
+         iteration = 0
+         done = False
+@@ -124,48 +143,116 @@ class DEOptimizer:
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+             
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
+-            
+-            prev_gbest_f = gbest_f
+-            
+-            # Generate trial vectors
++            base_F = float(params.get('F', self.F))
++            base_CR = float(params.get('CR', self.CR))
++
++            # Blend controller suggestion with adapted memory value
++            mu_F = float(np.mean(memory_F))
++            mu_CR = float(np.mean(memory_CR))
++            base_F = float(np.clip(0.4 * base_F + 0.6 * mu_F, 0.1, 1.0))
++            base_CR = float(np.clip(0.4 * base_CR + 0.6 * mu_CR, 0.0, 1.0))
++
++            # p-best selection pool shrinks as budget is consumed
++            progress = evals / max(1, self.max_evals)
++            p = float(np.clip(0.25 * (1.0 - progress), 0.05, 0.3))
++            n_pbest = max(1, int(pop_size * p))
++            sorted_idx = np.argsort(fitness)
++
++            # Archive + population pool for x_r2
++            archive_pop = np.vstack([pop, archive]) if len(archive) > 0 else pop
++            n_arch = len(archive_pop)
++
+             new_pop = np.copy(pop)
+-            for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
+-                else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
+-                
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
+-                
+-                # Mutation and crossover
+-                j_rand = rng.randint(0, self.dim)
+-                for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
+-                
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
+-            
+-            # Evaluate trial vectors
++            S_F = []
++            S_CR = []
++
++            # Generate and evaluate trial vectors
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+                     break
+-                trial_f = evaluate_problem(problem, new_pop[i])
++
++                # Sample F and CR from success-history memory (SHADE-style)
++                mr = int(rng.randint(0, H))
++                if memory_CR[mr] < 0.0 or rng.random() < 0.1:
++                    CR_i = base_CR
++                else:
++                    CR_i = float(np.clip(memory_CR[mr] + 0.1 * rng.randn(), 0.0, 1.0))
++
++                if memory_F[mr] < 0.0 or rng.random() < 0.1:
++                    F_i = base_F
++                else:
++                    F_i = float(np.clip(memory_F[mr] + 0.1 * rng.standard_cauchy(), 0.05, 1.0))
++                    while not (0.05 <= F_i <= 1.0):
++                        F_i = float(np.clip(memory_F[mr] + 0.1 * rng.standard_cauchy(), 0.05, 1.0))
++
++                # Current-to-pbest/1 mutation with external archive
++                pbest_idx = sorted_idx[rng.randint(0, n_pbest)]
++                r1 = rng.randint(0, pop_size)
++                while r1 == i:
++                    r1 = rng.randint(0, pop_size)
++                if n_arch > 1:
++                    r2 = rng.randint(0, n_arch)
++                    x_r2 = archive_pop[r2]
++                else:
++                    r2 = rng.randint(0, pop_size)
++                    while r2 == i or r2 == r1:
++                        r2 = rng.randint(0, pop_size)
++                    x_r2 = pop[r2]
++
++                mutant = pop[i] + F_i * (pop[pbest_idx] - pop[i]) + F_i * (pop[r1] - x_r2)
++
++                # Boundary handling: reflect then clip
++                for _ in range(5):
++                    below = mutant < lb
++                    above = mutant > ub
++                    if not np.any(below) and not np.any(above):
++                        break
++                    mutant = np.where(below, 2.0 * lb - mutant, mutant)
++                    mutant = np.where(above, 2.0 * ub - mutant, mutant)
++                mutant = np.clip(mutant, lb, ub)
++
++                # Binomial crossover
++                j_rand = rng.randint(0, self.dim)
++                mask = rng.random(self.dim) < CR_i
++                mask[j_rand] = True
++                trial = np.where(mask, mutant, pop[i])
++
++                trial_f = evaluate_problem(problem, trial)
+                 evals += 1
+-                
+-                # Greedy selection
++
++                # Greedy selection with archive retention
+                 if trial_f < fitness[i]:
+-                    pop[i] = new_pop[i].copy()
++                    # Save replaced individual to external archive
++                    if len(archive) < archive_capacity:
++                        archive = np.vstack([archive, pop[i].reshape(1, -1)])
++                    else:
++                        ridx = rng.randint(0, archive_capacity)
++                        archive[ridx] = pop[i]
++                    new_pop[i] = trial
+                     fitness[i] = trial_f
++                    S_F.append(F_i)
++                    S_CR.append(CR_i)
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+-                        gbest = new_pop[i].copy()
+-            
++                        gbest = trial.copy()
++
++            pop = new_pop
++
++            # Update success-history memory (Lehmer mean for F, arithmetic mean for CR)
++            if len(S_F) > 0:
++                S_F_arr = np.array(S_F)
++                S_CR_arr = np.array(S_CR)
++                denom = np.sum(S_F_arr)
++                if denom > 0:
++                    new_mu_F = np.sum(S_F_arr ** 2) / denom
++                else:
++                    new_mu_F = 0.5
++                new_mu_CR = float(np.mean(S_CR_arr))
++                memory_F[mem_idx] = float(np.clip(new_mu_F, 0.1, 1.0))
++                memory_CR[mem_idx] = float(np.clip(new_mu_CR, 0.0, 1.0))
++                mem_idx = (mem_idx + 1) % H
++
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+@@ -173,9 +260,9 @@ class DEOptimizer:
+             if self.controller is not None and train:
+                 next_obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 
+                            'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
+-                done = (evals >= self.max_evals)
+                 if hasattr(self.controller, 'store_reward'):
+-                    self.controller.store_reward(improved, next_obs, done)
++                    self.controller.store_reward(improved, next_obs, (evals >= self.max_evals))
++            prev_gbest_f = gbest_f
+             
+             done = (evals >= self.max_evals)
+ 
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..01ba422 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -6,6 +6,7 @@ the hook that a DQN-based controller should implement.
+ """
+ from abc import ABC, abstractmethod
+ from typing import Dict, Any
++import numpy as np
+ 
+ # Import global configuration
+ import sys
+@@ -131,10 +132,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(np.log(self.epsilon_start))
++        log_eps_end = float(np.log(self.epsilon_end))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(np.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 9340780..828f6eb 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -141,14 +141,23 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ 1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes.
+ 
+-2. **ALWAYS check if the Task Agent actually used the editor tool** by looking at chat_history_task_agent.md. If the Task Agent only described changes without applying them, your prompt must be more explicit about using the editor tool.
++2. **DETECT BROKEN/INCOMPLETE EDITS (CRITICAL)**: If the diff shows signs of a partial algorithm rewrite — e.g., dangling incomplete lines like `CR`, mixed vectorized and scalar code, misplaced indentation, duplicated blocks, or code that swings between the old DE loop and a new JADE/SHADE implementation — that means the Task Agent tried to make many small str_replace edits and broke the file. **The fix is NOT to tell it to "try harder" — it is to provide a COMPLETE reference implementation and instruct it to REPLACE THE ENTIRE FILE or ENTIRE optimize() METHOD in ONE str_replace call.** A complete reference JADE implementation is provided at `/hada/metabbo/reference_jade.py`.
+ 
+-3. **If evaluations failed**, check generate.log for the exact error. Common issues:
++3. **ALWAYS check if the Task Agent actually used the editor tool** by looking at chat_history_task_agent.md. If the Task Agent only described changes without applying them, your prompt must be more explicit about using the editor tool.
++
++4. **If evaluations failed**, check generate.log for the exact error. Common issues:
+    - Task Agent introduced a method that doesn't exist
+    - Task Agent broke the DEOptimizer interface
+-   - Task Agent never modified ec_algorithm.py (most common)
++   - Task Agent made partial/broken edits causing IndentationError or NameError (most common failure mode in recent generations)
++   - Task Agent never modified ec_algorithm.py (most common early-generation failure)
++
++5. **If the diff contains a broken/incomplete algorithm rewrite OR an incremental JADE patch that didn't improve score**, your primary goal this round is to update task_agent.py to:
++   - Point to `/hada/metabbo/reference_jade.py` as a complete, drop-in JADE implementation
++   - Mandate **whole-file replacement** via a single `cp` or `str_replace`, NEVER a chain of small edits
++   - Add explicit FORBIDDEN PATTERNS (per-individual Python loops over dim, helper-method patching, multiple small str_replace edits inside optimize)
++   - Require `python -m py_compile` and a short smoke test BEFORE submitting
+ 
+-4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
++6. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
+ 
+ ## 🔥 CRITICAL: REFERENCE THE BEST-KNOWN WINNING IMPLEMENTATION
+ For bbob_unconstrained, the **gen_11 L-SHADE achieved best score 0.93121**. Include this winning diff path in task_agent.py prompt:
+diff --git a/task_agent.py b/task_agent.py
+index 88e7e8f..b6c4754 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -55,7 +55,7 @@ The gen_11 L-SHADE included these critical components:
+ 
+ ## CURRENT STATE OF ec_algorithm.py (WHAT TO IMPROVE ON):
+ The current file already has a **partial JADE implementation** with archive and current-to-pbest/1, but it is **MISSING several key L-SHADE components** that the gen_11 winner used:
+-- ❌ **NO Linear Population Size Reduction (LPSR)** - the population stays at fixed size the whole run. This was important in gen_11.
++- ❌ **DONE Linear Population Size Reduction (LPSR)** - the population stays at fixed size the whole run. This was important in gen_11.
+ - ❌ **NO stagnation restart** - when the population converges, there is no mechanism to reinitialize worst individuals near the best. This was in gen_11.
+ - ✅ HAS external archive (JADE-style)
+ - ✅ HAS current-to-pbest/1 mutation

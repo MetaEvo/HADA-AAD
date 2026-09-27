@@ -1,0 +1,273 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..5775b53 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -110,6 +110,13 @@ class DEOptimizer:
+         initial_population_positions = pop.copy()
+         initial_population_fitness = fitness.copy()
+ 
++        # JADE external archive and adaptation memory
++        archive = np.empty((0, self.dim), dtype=float)
++        archive_capacity = max(pop_size * 2, 20)
++        mu_F = float(self.F)
++        mu_CR = float(self.CR)
++        c = 0.1
++
+         # Main loop
+         iteration = 0
+         done = False
+@@ -129,54 +136,102 @@ class DEOptimizer:
+             
+             prev_gbest_f = gbest_f
+             
+-            # Generate trial vectors
++            # JADE adaptive DE with optional external archive
++            progress = evals / max(1, self.max_evals)
++            p = max(0.05, 0.2 * (1.0 - progress))
++            n_pbest = max(2, int(pop_size * p))
++            sorted_idx = np.argsort(fitness)
++            archive_pop = np.vstack([pop, archive]) if len(archive) > 0 else pop
++            n_arch = len(archive_pop)
++
+             new_pop = np.copy(pop)
+-            for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
+-                else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
+-                
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
+-                
+-                # Mutation and crossover
+-                j_rand = rng.randint(0, self.dim)
+-                for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
+-                
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
+-            
+-            # Evaluate trial vectors
++            S_F = []
++            S_CR = []
++
++            # Generate and evaluate trial vectors
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+                     break
+-                trial_f = evaluate_problem(problem, new_pop[i])
++
++                # Individual F/CR: Cauchy/Normal samples around controller/memory blended base
++                base_F = float(np.clip(0.5 * F + 0.5 * mu_F, 0.1, 1.0))
++                base_CR = float(np.clip(0.5 * CR + 0.5 * mu_CR, 0.0, 1.0))
++                F_i = float(np.clip(base_F + 0.1 * rng.standard_cauchy(), 0.1, 1.0))
++                CR_i = float(np.clip(base_CR + 0.1 * rng.randn(), 0.0, 1.0))
++
++                # current-to-pbest/1 mutation with shrinking p-best pool
++                pbest_idx = sorted_idx[rng.randint(0, n_pbest)]
++                r1 = rng.randint(0, pop_size)
++                while r1 == i:
++                    r1 = rng.randint(0, pop_size)
++                if n_arch > 1:
++                    r2 = rng.randint(0, n_arch)
++                    x_r2 = archive_pop[r2]
++                else:
++                    r2 = rng.randint(0, pop_size)
++                    while r2 == i or r2 == r1:
++                        r2 = rng.randint(0, pop_size)
++                    x_r2 = pop[r2]
++
++                mutant = pop[i] + F_i * (pop[pbest_idx] - pop[i]) + F_i * (pop[r1] - x_r2)
++
++                # Reflection boundary repair (with fallback clipping)
++                for _ in range(5):
++                    below = mutant < lb
++                    above = mutant > ub
++                    if not np.any(below) and not np.any(above):
++                        break
++                    mutant = np.where(below, 2 * lb - mutant, mutant)
++                    mutant = np.where(above, 2 * ub - mutant, mutant)
++                mutant = np.clip(mutant, lb, ub)
++
++                # Binomial crossover
++                j_rand = rng.randint(0, self.dim)
++                mask = rng.random(self.dim) < CR_i
++                mask[j_rand] = True
++                trial = np.where(mask, mutant, pop[i])
++
++                trial_f = evaluate_problem(problem, trial)
+                 evals += 1
+-                
+-                # Greedy selection
++
++                # Greedy selection with external archive update
+                 if trial_f < fitness[i]:
+-                    pop[i] = new_pop[i].copy()
++                    if len(archive) < archive_capacity:
++                        archive = np.vstack([archive, pop[i].reshape(1, -1)])
++                    else:
++                        ridx = rng.randint(0, archive_capacity)
++                        archive[ridx] = pop[i]
++                    new_pop[i] = trial
+                     fitness[i] = trial_f
++                    S_F.append(F_i)
++                    S_CR.append(CR_i)
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+-                        gbest = new_pop[i].copy()
+-            
++                        gbest = trial.copy()
++
++            pop = new_pop
++
++            # Update success-history memory (Lehmer mean for F, arithmetic mean for CR)
++            if len(S_F) > 0:
++                S_F_arr = np.array(S_F)
++                S_CR_arr = np.array(S_CR)
++                denom = np.sum(S_F_arr)
++                if denom > 0:
++                    mu_F = float(np.clip((1.0 - c) * mu_F + c * np.sum(S_F_arr ** 2) / denom, 0.1, 1.0))
++                mu_CR = float(np.clip((1.0 - c) * mu_CR + c * np.mean(S_CR_arr), 0.0, 1.0))
++
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+-            
++
+             # Store transition in controller's replay buffer
+             if self.controller is not None and train:
+-                next_obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 
+-                           'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
++                next_obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f,
++                            'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
+                 done = (evals >= self.max_evals)
+                 if hasattr(self.controller, 'store_reward'):
+                     self.controller.store_reward(improved, next_obs, done)
+-            
++
+             done = (evals >= self.max_evals)
+ 
+         self.stats = {
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..01ba422 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -6,6 +6,7 @@ the hook that a DQN-based controller should implement.
+ """
+ from abc import ABC, abstractmethod
+ from typing import Dict, Any
++import numpy as np
+ 
+ # Import global configuration
+ import sys
+@@ -131,10 +132,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(np.log(self.epsilon_start))
++        log_eps_end = float(np.log(self.epsilon_end))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(np.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.
+diff --git a/hyper_agent.py b/hyper_agent.py
+index ef2866c..4f103c3 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -151,9 +151,10 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+    - Task Agent made partial/broken edits causing IndentationError or NameError (most common failure mode in recent generations)
+    - Task Agent never modified ec_algorithm.py (most common early-generation failure)
+ 
+-5. **If the diff contains a broken/incomplete algorithm rewrite**, your primary goal this round is to update task_agent.py to:
++5. **If the diff contains a broken/incomplete algorithm rewrite OR an incremental JADE patch that didn't improve score**, your primary goal this round is to update task_agent.py to:
+    - Point to `/hada/metabbo/reference_jade.py` as a complete, drop-in JADE implementation
+-   - Mandate **whole-file or whole-method replacement** via a single str_replace, not a chain of small edits
++   - Mandate **whole-file replacement** via a single `cp` or `str_replace`, NEVER a chain of small edits
++   - Add explicit FORBIDDEN PATTERNS (per-individual Python loops over dim, helper-method patching, multiple small str_replace edits inside optimize)
+    - Require `python -m py_compile` and a short smoke test BEFORE submitting
+ 
+ 6. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
+diff --git a/task_agent.py b/task_agent.py
+index 6762150..179325d 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -73,27 +73,55 @@ So your modified `ec_algorithm.py` MUST still provide:
+ - Each function evaluation MUST increment `evals` and stop when `evals >= self.max_evals`
+ 
+ ## WHAT TO IMPROVE (be aggressive - try completely different algorithms):
+-The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. The baseline score is ~0.88 on BBOB. You can improve dramatically by:
+-
+-**⚠️ CRITICAL: A COMPLETE REFERENCE JADE IMPLEMENTATION IS PROVIDED AT `/hada/metabbo/reference_jade.py`**
+-This file contains a complete, working, syntactically valid `DEOptimizer` class implementing JADE. If you want to use JADE, the SAFEST approach is:
+-1. Read `/hada/metabbo/reference_jade.py`
+-2. Use `editor` → `str_replace` on `/hada/metabbo/ec_algorithm.py` to replace the **ENTIRE content** of ec_algorithm.py with the contents of reference_jade.py (or first `view` reference_jade.py, then rewrite ec_algorithm.py with the same complete implementation)
+-
+-**Try these algorithm upgrades (in order of expected impact):**
+-1. **SHADE / L-SHADE**: Success-History based Adaptive DE - CEC competition winner, adapts F and CR per-individual
+-2. **JADE**: Adaptive DE with external archive and current-to-pbest mutation (reference implementation provided!)
+-3. **CMA-ES**: Covariance Matrix Adaptation Evolution Strategy - state-of-the-art for continuous black-box optimization
+-4. **Hybrid DE variants**: Add mechanisms like opposition-based learning, restart, local search, diversity maintenance
+-5. **Improved initialization**: Latin Hypercube Sampling, Sobol sequence, or opposite-based initialization
+-
+-**Structural changes you can make:**
+-- **REPLACE THE ENTIRE `DEOptimizer` CLASS** (not just parts of the loop) with a completely different algorithm (SHADE, JADE, CMA-ES) while keeping the same class/method interface — this is much safer than making incremental edits to the existing DE loop
+-- Add an external archive for storing inferior solutions (JADE-style)
+-- Implement parameter adaptation (SHADE-style success-history memory)
++The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. The baseline score has been stuck at ~0.87-0.88 for many generations because previous agents only made small parameter tweaks or partial JADE-style patches to the DE loop. **You MUST make a real algorithmic change this generation.**
++
++## ⚠️ THE #1 RULE THIS GENERATION: REPLACE, DON'T PATCH
++The previous generation tried to incrementally patch the DE loop into a JADE hybrid (adding `_sample_cauchy`, `_reflect`, an `archive` list, current-to-pbest mutation) but the score did not improve (still ~0.87). **Incremental patching of the existing DE loop is FORBIDDEN.**
++The ONLY acceptable approach is to replace the ENTIRE `DEOptimizer` class (or the entire file) with a complete, working algorithm implementation.
++
++## ✅ THE SAFEST WAY TO GET A WORKING JADE: COPY THE REFERENCE FILE
++A complete, syntactically valid, drop-in JADE implementation is provided at:
++**`/hada/metabbo/reference_jade.py`**
++
++This file contains a full `DEOptimizer` class with:
++- JADE adaptive F and CR (Cauchy/Normal sampling + success-history memory)
++- current-to-pbest/1 mutation
++- external archive
++- binomial crossover
++- boundary reflection
++- the exact interface required by the evaluator
++
++**DO THIS EXACTLY (in this order):**
++1. `editor view /hada/metabbo/reference_jade.py` — read the whole file.
++2. REPLACE the entire `/hada/metabbo/ec_algorithm.py` with the contents of `reference_jade.py`. The simplest, safest way is one bash command:
++   ```bash
++   cp /hada/metabbo/reference_jade.py /hada/metabbo/ec_algorithm.py
++   ```
++   If you prefer the editor, use ONE `str_replace` that replaces the ENTIRE file content (old_str = the whole current file, new_str = the whole reference file).
++3. Run `python -m py_compile /hada/metabbo/ec_algorithm.py`.
++4. Run the smoke test below.
++5. ONLY AFTER the smoke test passes, you MAY make small improvements on top of the working JADE (e.g., add a restart, tune `pbest` ratio, change pop size). Do NOT attempt a full rewrite from scratch.
++
++## FORBIDDEN PATTERNS (DO NOT DO ANY OF THESE)
++- ❌ Do NOT add helper methods (`_sample_cauchy`, `_reflect`, etc.) piecemeal to the existing DE loop.
++- ❌ Do NOT keep the old `for i in range(pop_size): for j in range(self.dim):` per-individual/per-dimension mutation+crossover loop. This is too slow and causes timeouts.
++- ❌ Do NOT write a chain of 5-10 small `str_replace` edits inside `optimize()`. One whole-file replacement is required.
++- ❌ Do NOT modify `/hada/hyper_agent.py` or `/hada/metabbo/param_controller.py` unless explicitly instructed. Focus ALL effort on `/hada/metabbo/ec_algorithm.py`.
++
++## Other algorithm options (only if you choose NOT to use JADE):
++If you implement a different algorithm (SHADE, CMA-ES, etc.), you MUST still:
++- Replace the entire `DEOptimizer` class in ONE str_replace (or copy a complete reference file).
++- Keep the exact `__init__` / `optimize` interface.
++- Use vectorized NumPy operations for mutation/crossover (no `for j in range(self.dim)` loops).
++- Pass the smoke test before finishing.
++
++## Structural changes you can make ON TOP of a working JADE:
++- Add an external archive (already in reference_jade.py)
++- Implement parameter adaptation (already in reference_jade.py)
+ - Add population restart when diversity drops
+ - Add local search / hill-climbing as a final refinement
+ - Change population sizing, mutation strategies, crossover schemes
++- Add improved initialization (Latin Hypercube, Sobol, opposition-based)
+ 
+ **Meta-learning improvements:**
+ - The `controller` object passed to `__init__` implements a `step(obs)` method returning a dict of parameters (e.g., {{'F': ..., 'CR': ...}}). You can use these parameters in your algorithm.

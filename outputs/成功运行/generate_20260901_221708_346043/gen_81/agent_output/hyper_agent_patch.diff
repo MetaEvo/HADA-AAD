@@ -1,0 +1,67 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 9340780..6b79f93 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -150,6 +150,14 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ 4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
+ 
++## 🔥 LATEST LESSONS FROM GEN_74 (bbob_unconstrained, score 0.8846):
++- **LHS initialization HURT**: gen_74 added Latin hypercube sampling and scored 0.8846, below the best 0.93121 (gen_11 L-SHADE with uniform init). Your task_agent.py prompt MUST explicitly reject LHS/quasi-random initialization.
++- **New controller classes without wiring are useless**: gen_74 added `LSHADEHeuristicController` to param_controller.py but never trained it or wired it into `meta_learning.py`. Adding dead code wastes evaluation budget. The task_agent.py prompt MUST say: "DO NOT add new controller classes unless you also modify meta_learning.py to train them."
++- **Per-individual Python loops cause timeouts**: gen_62 scored only 0.8549 because it wrote per-individual loops instead of vectorized NumPy. This is the #1 recurring failure. The task_agent.py prompt MUST include a mandatory static check that greps for `for i in range(pop_size)` and `for j in range(self.dim)`.
++- **Always check the latest generation's diff**: Look at `{eval_path}/gen_N/<domain>_eval/agent_evals/all_patch.diff` before modifying task_agent.py. If the diff only tweaks F/CR/pop_size values, that's a FAILURE.
++
++
++
+ ## 🔥 CRITICAL: REFERENCE THE BEST-KNOWN WINNING IMPLEMENTATION
+ For bbob_unconstrained, the **gen_11 L-SHADE achieved best score 0.93121**. Include this winning diff path in task_agent.py prompt:
+ `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff`
+diff --git a/task_agent.py b/task_agent.py
+index 88e7e8f..5fac82d 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -194,6 +194,43 @@ Use `current_n` throughout the loop (initialized to `pop_size`) instead of hardc
+ - Your changes must be syntactically valid Python.
+ - **The gen_11 L-SHADE achieved 0.93121. Your goal is to add back the missing L-SHADE components (LPSR, restart, weighted Lehmer mean) to the current JADE implementation to recover and exceed that score.**
+ 
++## MANDATORY STATIC CHECKS (RUN BEFORE SUBMITTING)
++
++**Gen_62 ignored the vectorized template and wrote per-individual Python loops again, scoring only 0.8549 (down from gen_50's 0.9289). This is the #1 recurring failure.**
++
++Before you submit, you MUST run these checks via bash and confirm all pass:
++
++```bash
++cd /hada/metabbo && echo '--- Checking for forbidden per-individual loops ---' && grep -n 'for i in range(pop_size)' ec_algorithm.py || echo 'OK: no forbidden loop'; grep -n 'for j in range(self.dim)' ec_algorithm.py || echo 'OK: no forbidden loop'; echo '--- Checking LPSR is present ---' && grep -n 'pop_min\|new_pop_size\|LPSR\|Linear Population' ec_algorithm.py || echo 'WARNING: LPSR NOT FOUND - SHADE/JADE without LPSR is REJECTED'; echo '--- Checking class/alias ---' && grep -n 'class DEOptimizer\|DEOptimizer =' ec_algorithm.py
++```
++
++If the grep finds `for i in range(pop_size)` or `for j in range(self.dim)` anywhere in the search loop, **STOP and rewrite using the vectorized NumPy pattern below**. Do not submit code that contains these loops.
++
++If you implement any JADE/SHADE-style algorithm and `LPSR`/`new_pop_size`/`pop_min` is not present, **STOP and add Linear Population Size Reduction** — SHADE/JADE without LPSR is a known non-improvement (gen_29=0.8875, gen_62=0.8549).
++
++## VECTORIZED IMPLEMENTATION PATTERN (USE THIS TO AVOID TIMEOUTS)
++
++If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate all mutant vectors as a NumPy array:
++
++```python
++# Example: vectorized current-to-pbest/1 mutation
++# pbest_idx: array of indices of pbest individuals for each i
++# r1, r2: arrays of random distinct indices
++# F_i: array of F values per individual
++# pop: current population array (n x d)
++mutants = pop[pbest_idx] + F_i[:, None] * (pop[r1] - pop[r2] + pop[archive_idx] - pop[r1])
++```
++
++Use fully vectorized NumPy operations for mutation, crossover, and selection. This is mandatory for performance - per-individual Python loops time out (gen_62 scored 0.8549 and timed out on many instances).
++
++## STRICT REJECTION LIST (UPDATED):
++- ❌ **DO NOT add LHS or quasi-random initialization** — gen_74 added LHS and scored 0.8846, below best 0.93121. Uniform random init is sufficient.
++- ❌ **DO NOT add new controller classes unless you are also modifying meta_learning.py to train them** — gen_74 added LSHADEHeuristicController but did not wire it into training, wasting effort.
++- ❌ **DO NOT make parameter tweaks to existing F/CR/pop_size values** — these are non-improvements.
++- ❌ **DO NOT modify the `optimize()` signature or return contract.**
++- ❌ **DO NOT modify any file under /hada/domains/**
++
++
+ Now here is the specific task input:
+ """
+         

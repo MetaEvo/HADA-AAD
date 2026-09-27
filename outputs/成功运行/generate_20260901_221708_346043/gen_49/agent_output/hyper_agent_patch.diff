@@ -1,0 +1,31 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index abb80da..3308533 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -128,6 +128,7 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+    - **Try completely different algorithm combinations**: CMA-ES + PPO, SHADE + Bayesian Opt, NSGA-III + L2O, etc.
+    - **Explore different search operators, selection mechanisms, and parameter adaptation strategies**
+ 
++## CRITICAL: TASK AGENT MUST ACTUALLY EDIT - If chat_history shows no editor str_replace call, next task_agent prompt must add: "You MUST call editor str_replace on /hada/metabbo/ec_algorithm.py".
+ 7. **CHECK DOMAIN EVALUATION PATTERNS** - CRITICAL:
+    - **ALWAYS check the domain folder (e.g., /hada/domains/bbob_unconstrained/dqn_de_util.py) to see how evaluation is called**
+    - **The evaluation function is typically a module-level function like `evaluate_problem(problem, x)` - DO NOT convert it to a class method like `self._eval_task()` unless you define it first**
+diff --git a/task_agent.py b/task_agent.py
+index 8e1db9e..7f7b0e2 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -77,12 +77,13 @@ So your modified `ec_algorithm.py` MUST still provide:
+ ### ⚠️ ABSOLUTE REQUIREMENT: YOU MUST REPLACE THE ALGORITHM, NOT JUST TWEAK PARAMETERS
+ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. Scores have plateaued because prior attempts only tweaked parameters (w, c1, c2, F, CR). **THIS IS A FAILURE MODE.**
+ 
+-**CURRENT STATUS (gen_16):** A SHADE (Success-History Adaptive DE) was already implemented in `/hada/metabbo/ec_algorithm.py` by a previous Task Agent. It scored **0.9244**, which is **BELOW the best-known score of 0.93121** (from gen_11). So just adding SHADE is NOT enough. You MUST either (a) add a new mechanism on top of the existing SHADE (LPSR, restart, local search, OBL, ensemble), or (b) switch to a different algorithm family (CMA-ES, jDE, SaNSDE, CoDE) that can perform better.
++**CURRENT STATUS (as of gen_47):** A SHADE (Success-History Adaptive DE) was already implemented in `/hada/metabbo/ec_algorithm.py` by a previous Task Agent. It scored **0.9244**, which is **BELOW the best-known score of 0.93121** (from gen_11). So just adding SHADE is NOT enough. You MUST either (a) add a new mechanism on top of the existing SHADE (LPSR, restart, local search, OBL, ensemble), or (b) switch to a different algorithm family (CMA-ES, jDE, SaNSDE, CoDE) that can perform better.
+ You MUST make a **structural change to the core search mechanism**:
+ - Replace the mutation/crossover/selection logic in `DEOptimizer` with a fundamentally different algorithm (SHADE, JADE, CMA-ES, L-SHADE, etc.)
+ - Add new mechanisms: external archive, parameter adaptation, population restart, local search, opposition-based learning, diversity maintenance
+ - Changing constants, adding tiny random perturbations, or altering initialization only is NOT acceptable
+ - If your diff only changes numeric literals (e.g., F=0.5 to F=0.7, swarm_size 40 to 50, adding `+ 0.1*rand`), it will be rejected
++- **GEN_47 FAILED: You MUST call editor str_replace to modify ec_algorithm.py.**
+ 
+ You can improve dramatically by:
+ 

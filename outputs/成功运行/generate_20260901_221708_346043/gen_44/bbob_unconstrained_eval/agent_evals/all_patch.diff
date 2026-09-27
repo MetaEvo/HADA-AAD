@@ -1,0 +1,69 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 51063c2..0330df2 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -82,14 +82,19 @@ class DEOptimizer:
+             self.controller.reset({'dim': self.dim, 'lower': self.lower_bounds, 'upper': self.upper_bounds, 'max_evals': self.max_evals})
+ 
+         pop_size = self.pop_size
++        min_pop_size = max(4, int(0.2 * pop_size))
+         lb = self.lower_bounds
+         ub = self.upper_bounds
+         
+         effective_seed = seed if seed is not None else _config_seed
+         rng = np.random.RandomState(effective_seed)
+ 
+-        # Initialize population - uniform random initialization
+-        pop = rng.uniform(lb, ub, (pop_size, self.dim))
++        # Latin Hypercube Sampling initialization for better initial coverage
++        pop = np.empty((pop_size, self.dim))
++        for j in range(self.dim):
++            sample_perm = rng.permutation(pop_size)
++            for i in range(pop_size):
++                pop[i, j] = lb[j] + (sample_perm[i] + rng.rand()) / pop_size * (ub[j] - lb[j])
+         
+         # Evaluate initial population
+         evals = 0
+@@ -137,12 +142,14 @@ class DEOptimizer:
+             
+             base_F = float(params.get('F', self.F))
+             base_CR = float(params.get('CR', self.CR))
++            pbest_ratio = float(params.get('pbest_ratio', 0.2))
++            archive_ratio = float(params.get('archive_ratio', 1.0))
+             
+             prev_gbest_f = gbest_f
+ 
+             # Sort indices by fitness to support pbest selection
+             sorted_idx = np.argsort(fitness)
+-            pbest_num = max(1, int(0.2 * pop_size))
++            pbest_num = max(1, int(pbest_ratio * pop_size))
+ 
+             # Per-individual parameters and success records
+             F_vals = np.zeros(pop_size)
+@@ -176,7 +183,7 @@ class DEOptimizer:
+                 r1 = int(rng.choice(candidates))
+ 
+                 # Choose r2 from archive (with probability) or from population
+-                use_archive = len(archive) > 0 and rng.rand() < 0.5
++                use_archive = len(archive) > 0 and rng.rand() < archive_ratio
+                 if use_archive:
+                     idx2 = int(rng.randint(len(archive)))
+                     x_r2 = archive[idx2]
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 6ca3bfd..58818d2 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -144,5 +144,10 @@ class AdaptiveDEController(ParamController):
+         if current_gbest_cv is not None and t > 0.5 and current_gbest_cv > epsilon:
+             epsilon = max(epsilon, min(current_gbest_cv * 0.5, self.epsilon_start))
+ 
++        # pbest ratio decreases from 0.3 to 0.1 for more exploitation later
++        pbest_ratio = 0.30 - 0.20 * t
++        # Archive ratio stays at 1.0 (standard JADE/SHADE)
++        archive_ratio = 1.0
+         return {'F': float(F), 'CR': float(CR), 'strategy': strategy,
+-                'epsilon': float(epsilon)}
+\ No newline at end of file
++                'epsilon': float(epsilon), 'pbest_ratio': float(pbest_ratio),
++                'archive_ratio': float(archive_ratio)}
+\ No newline at end of file

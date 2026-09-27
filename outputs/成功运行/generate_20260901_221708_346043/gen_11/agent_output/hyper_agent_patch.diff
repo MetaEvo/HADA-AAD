@@ -1,0 +1,182 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index ea8cd0c..6b123ae 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -125,6 +125,41 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+    - [ ] The code can actually run without AttributeError or NameError
+    - [ ] Changes are incremental and don't break existing functionality
+ 
++## CRITICAL VERIFICATION OF TASK AGENT'S ACTUAL OUTPUT
++You MUST inspect the latest `all_patch.diff` to determine whether the Task Agent made a REAL structural change or just parameter tweaks.
++
++### CHECK `all_patch.diff` FOR THESE RED FLAGS (Task Agent FAILED):
++- ❌ Patch modifies `hyper_agent.py` or `task_agent.py` instead of `ec_algorithm.py` (Task Agent only changed prompt, not code)
++- ❌ Patch only changes numeric constants (F, CR, w, c1, c2, pop_size, memory_size, pbest_p)
++- ❌ Patch only adds LHS initialization or boundary handling
++- ❌ Patch only adds stagnation restart of worst individuals
++- ❌ Patch only blends controller outputs with memory values
++- ❌ Patch only fixes log/exp names, or adds helper functions that aren't called
++
++### ACCEPTABLE STRUCTURAL CHANGES IN `ec_algorithm.py`:
++- ✅ Different mutation strategy: `current-to-pbest/1`, `best/1`, `best/2`, `current-to-rand/1`
++- ✅ Different crossover: exponential, eigenvector-based, or removed crossover
++- ✅ Different selection: `(mu+lambda)`, elitist with archive
++- ✅ New optimizer class: `CMAESOptimizer`, `GLPSO`, `SHADE`, `JADE`, `L-SHADE`
++- ✅ New mechanisms: archive, migration, linear population size reduction, restart with reinitialization
++- ✅ Success-history parameter adaptation (Lehmer mean, memory of F/CR)
++
++## WHAT TO DO IF THE TASK AGENT IS STILL MAKING PARAMETER TWEAKS:
++If you detect any of the red flags above, you MUST fix `task_agent.py` by:
++1. Adding an even MORE explicit "REJECTED" list with the specific bad patterns you observed
++2. Adding a concrete JADE/current-to-pbest/1 code example directly in the prompt (so the model doesn't have to invent it)
++3. Making the instruction start with "YOUR #1 PRIORITY: CHANGE THE ACTUAL SEARCH OPERATOR"
++4. Adding a verification checklist that requires the agent to confirm the mutation/crossover/selection operator was changed
++
++## EXPLORE META-LEARNING DIVERSITY TOO:
++The task agent should also explore different meta-learning approaches, not just DQN. Consider encouraging:
++- PPO (Proximal Policy Optimization)
++- Bayesian Optimization for parameter control
++- Learning-to-Optimize (L2O) with recurrent networks
++- Rule-based adaptive controllers (e.g., SHADE-style success-history adaptation as the "controller")
++
++But remember: **change ONE module per generation** (EA or meta-learning, not both at once) so improvements can be attributed.
++
+ Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+ 
+ GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code.
+diff --git a/task_agent.py b/task_agent.py
+index 0b1c2f7..2f87696 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -26,19 +26,125 @@ class TaskAgent(AgentSystem):
+                 - new_msg_history (list): A list of messages representing the message history of the interaction.
+         """
+         domain = inputs['domain']
+-        instruction = f"""You are an agent.
++        instruction = f"""You are an expert optimization algorithm researcher improving code for the {domain} domain.
+ 
+-Task input:
++## YOUR #1 PRIORITY: CHANGE THE ACTUAL SEARCH OPERATOR
++Modify `/hada/metabbo/ec_algorithm.py` to make a STRUCTURAL change to the evolutionary algorithm.
++Parameter tweaks (F, CR, w, c1, c2, pop_size, LHS init, restart thresholds, boundary handling) have caused scores to PLATEAU for 20+ generations. **Your change will be REJECTED if it is only a parameter tweak.**
++
++## EXPLICITLY REJECTED (DO NOT DO THESE):
++- ❌ Changing F, CR, w, c1, c2, pop_size values
++- ❌ Adding LHS initialization
++- ❌ Adding stagnation restart of worst individuals
++- ❌ Blending controller outputs with memory values
++- ❌ Fixing log/exp names
++- ❌ Adding boundary handling tweaks
++- ❌ Increasing SHADE memory size or tweaking pbest_p
++- ❌ Rewriting dqn_de_util.py or any file in /hada/domains/
++- ❌ Breaking the `optimize()` return contract
++
++## ACCEPTED STRUCTURAL CHANGES (implement at least one):
++1. **Replace mutation operator**: change `rand/1` to `current-to-pbest/1` (JADE/SHADE), `best/1`, `best/2`, `current-to-rand/1`, or `current-to-best/1`.
++2. **Replace crossover**: use exponential crossover, eigenvector-based crossover, or remove crossover entirely.
++3. **Implement a new optimizer class**: add `CMAESOptimizer` or `GLPSO` and alias `DEOptimizer = CMAESOptimizer` at the bottom of the file.
++4. **Add JADE archive**: maintain an external archive of inferior solutions and use it in mutation.
++5. **Implement success-history parameter adaptation (SHADE)**: store F/CR in memory, sample per-individual, update via Lehmer means.
++6. **Linear Population Size Reduction (LPSR)**: shrink population size as evaluation budget is consumed.
++
++## CONCRETE CODE EXAMPLE (JADE current-to-pbest/1):
++```python
++# Inside the optimization loop, replace the mutation block:
++# 1. Sort population by fitness to get pbest pool
++order = np.argsort(fitness)
++pbest_count = max(1, int(0.15 * pop_size))
++pbest_pool = order[:pbest_count]
++
++# 2. For each individual i generate a trial:
++for i in range(pop_size):
++    # pbest individual
++    pbest_i = pbest_pool[rng.randint(0, pbest_count)]
++    x_pbest = pop[pbest_i]
++    
++    # r1: random from pop, != i
++    r1 = rng.randint(pop_size)
++    while r1 == i:
++        r1 = rng.randint(pop_size)
++    
++    # r2: from archive (50% chance) or pop, != i and != r1
++    if len(archive) > 0 and rng.random() < 0.5:
++        r2 = archive[rng.randint(len(archive))]
++    else:
++        r2_idx = rng.randint(pop_size)
++        while r2_idx == i or r2_idx == r1:
++            r2_idx = rng.randint(pop_size)
++        r2 = pop[r2_idx]
++    
++    # current-to-pbest/1 mutation
++    mutant = pop[i] + F_i[i] * (x_pbest - pop[i]) + F_i[i] * (pop[r1] - r2)
++    
++    # Binomial crossover (ensure at least one dim from mutant)
++    j_rand = rng.randint(self.dim)
++    mask = rng.random(self.dim) < CR_i[i]
++    mask[j_rand] = True
++    trial = np.where(mask, mutant, pop[i])
++    trial = np.clip(trial, lb, ub)
++    new_pop[i] = trial
+ ```
+-{inputs}
++
++## INTERFACE REQUIREMENTS (CRITICAL - BREAKING THESE GIVES ZERO SCORE):
++The caller in `/hada/domains/{domain}/dqn_de_util.py` does:
++```python
++de_opt = ec_mod.DEOptimizer(dim, lower_bounds, upper_bounds, max_evals, params, controller, recorder, swarm_size)
++gbest, stats = de_opt.optimize(problem, train=True, seed=seed)
++# reads stats['gbest_f'], stats['initial_gbest_f']
+ ```
++Your class MUST:
++- Keep constructor: `__init__(self, dim, lower_bounds, upper_bounds, max_evals, params=None, controller=None, recorder=None, swarm_size=None)`
++- Keep method: `optimize(self, problem, x0=None, train=True, seed=None)` returning `(gbest_list, stats_dict)`
++- Stats dict must include: `gbest`, `gbest_f`, `evals`, `iterations`, `initial_gbest_f`
++- Increment `evals` for EVERY `evaluate_problem()` call
++- Preserve controller interface: `controller.reset(...)`, `controller.step(obs)`
++
++## BEFORE MAKING CHANGES:
++1. Open `/hada/domains/{domain}/dqn_de_util.py` to see exactly how your optimizer is called.
++2. Open `/hada/metabbo/ec_algorithm.py` to see the current `DEOptimizer.optimize()` structure.
++3. Check that `evaluate_problem(problem, x)` is defined in ec_algorithm.py; reuse it.
++
++## INCREMENTAL IMPROVEMENT STRATEGY:
++- Change ONE functional module this generation (e.g., only the mutation operator OR only add an archive).
++- Do NOT rewrite the entire file; keep working code intact.
++- Define any new helper methods BEFORE calling them.
++- Verify function signatures match their callers.
+ 
+-Respond in JSON format with the following schema:
++## SUPPORTED ALGORITHMS FOR {domain}:
++- **bbob_unconstrained**: DE, JADE, L-SHADE, SHADE, CMA-ES, GLPSO, ES
++- **bbob_constrained**: C-DE, CMA-ES with constraints, SHADE with feasibility rules
++- **metabox_mt**: MFEA, MFEA-II, MFEA-DE, MFDE, CMT-DE
++- **metabox_mo**: NSGA-II, NSGA-III, MOEA/D, SPEA2, SMPSO, IBEA
++
++## TOOL USE:
++Use the `editor` tool with command=`str_replace` to modify `/hada/metabbo/ec_algorithm.py`.
++
++## VERIFICATION CHECKLIST BEFORE FINISHING:
++- [ ] All method/function calls reference existing code
++- [ ] The class can be instantiated with `DEOptimizer(dim, lower, upper, max_evals, params, controller, recorder, swarm_size)`
++- [ ] `optimize()` returns `(gbest_list, stats_dict)` with required keys
++- [ ] `evals` is incremented for every `evaluate_problem` call
++- [ ] No undefined variables, methods, or syntax errors
++
++## FINAL RESPONSE FORMAT:
++After completing modifications, respond in JSON:
+ <json>
+ {{
+-    "response": ...
++    "response": "Concise description of the structural change made and the expected benefit."
+ }}
+-</json>"""
++</json>
++
++## TASK INPUT:
++```
++{inputs}
++```
++"""
+         new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all')
+ 
+         # Extract the response

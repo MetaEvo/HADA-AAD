@@ -1,0 +1,111 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index eedc944..8129a1b 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -163,6 +163,12 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ 4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
+ 
++## 🔥 LATEST LESSONS FROM GEN_81 (bbob_unconstrained, score 0.9282):
++- **Constant tweaks are still happening**: gen_81's diff changed `memory_size = 5` to `memory_size = 10` and `archive_capacity = max(pop_size, 20)` to `max(pop_size, 40)`, plus added LPSR and stagnation restart. Score was 0.9282, still below best 0.93121.
++- **Weighted Lehmer mean is the missing piece**: gen_81 already added LPSR and stagnation restart, but the SHADE memory update still uses `np.mean(S_F)` instead of the delta-fitness weighted Lehmer mean that gen_11 used. This is the key difference to close the 0.003 gap.
++- **Task Agent should be told the exact state**: The task_agent.py prompt MUST state which L-SHADE components already exist (LPSR, restart, archive) and which are still missing (weighted Lehmer mean, S_delta tracking). Do not tell it to "add LPSR" when gen_81 already added it.
++- **Mandatory static checks work**: The task_agent.py prompt includes bash greps for forbidden loops and required components. Keep these checks and add one for weighted Lehmer mean (`mean_F`, `S_F_arr`, `weights * S_F_arr`).
++
+ ## 🔥 CRITICAL: REFERENCE THE BEST-KNOWN WINNING IMPLEMENTATION
+ For bbob_unconstrained, the **gen_11 L-SHADE achieved best score 0.93121**. Include this winning diff path in task_agent.py prompt:
+ `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff`
+diff --git a/task_agent.py b/task_agent.py
+index b46160c..32bd6fe 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -179,22 +179,74 @@ Use `current_n` throughout the loop (initialized to `pop_size`) instead of hardc
+ - ❌ Rewriting dqn_de_util.py or any file in /hada/domains/
+ - ❌ Breaking the `optimize()` return contract
+ 
+-## ⚡ PROGRESSION / INCREMENTAL STACKING (READ THIS - DO NOT REPEAT THE SAME ALGORITHM):
+-- **If SHADE was already implemented** (check the diff in /hada/outputs/generate_20260828_142858_379759/gen_16/), **do NOT just tweak its constants**. STACK a new mechanism on top:
+-  - Add **L-SHADE's Linear Population Size Reduction (LPSR)** - shrink population linearly each generation.
+-  - Add **restart when diversity collapses** (if mean pairwise distance < epsilon, reinitialize worst 80% keeping best).
+-  - Add **local search / hill-climbing** on the best individual every K generations.
+-  - Add **opposition-based learning (OBL)** during initialization or after each generation.
+-  - Add **ensemble / multi-operator DE** (randomly choose between current-to-pbest/1, rand/1, best/1 each generation).
+-- **Make exactly ONE major structural addition per generation** (e.g., this gen = LPSR, next gen = restart). Do NOT try 5 changes at once.
+ 
+-## 🎯 TARGET WEAK PROBLEMS (READ THE PROGRESS DATA):
+-- Read `/hada/outputs/generate_20260828_142858_379759/progress_info_bbob_unconstrained_train_agent.txt` and the latest `generate.log` to see which BBOB functions are weak (e.g., f14, f7, f15, f10 in recent runs).
+-- For weak functions (usually multimodal / ill-conditioned):
+-  - **Increase diversity** (larger initial population, dither, mutation scaling).
+-  - **Add restart** to escape local optima.
+-  - **Consider CMA-ES** for ill-conditioned problems (f14/f15 often Rosenbrock/ellipsoid).
+-  - **Adapt F/CR more aggressively** (L-SHADE or jDE).
++## LATEST STATE FROM GEN_81 (READ THIS BEFORE EDITING):
++The gen_81 implementation (score 0.9282) already added:
++- ✅ **Linear Population Size Reduction (LPSR)** with `pop_curr` tracking
++- ✅ **Stagnation-triggered restart** (reinitializes worst half after 6 stagnant iterations)
++- ✅ **SHADE success-history memory** with archive
++- ❌ **STILL MISSING: Weighted Lehmer mean for F update** — the memory update still uses `np.mean(S_F)` instead of delta-fitness weighted Lehmer mean. This was a key part of the gen_11 winner (score 0.93121).
++
++Your #1 task: implement the **weighted Lehmer mean** for F and weighted mean for CR (code provided below). Do NOT just change numeric constants.
++
++## MANDATORY STATIC CHECKS (RUN BEFORE SUBMITTING)
++Before you submit, you MUST run these checks via bash and confirm all pass:
++
++```bash
++cd /hada/metabbo && echo '--- Checking for forbidden per-individual loops ---' && grep -n 'for i in range(pop_size)' ec_algorithm.py || echo 'OK: no forbidden loop'; grep -n 'for j in range(self.dim)' ec_algorithm.py || echo 'OK: no forbidden loop'; echo '--- Checking weighted Lehmer mean is present ---' && grep -n 'S_F_arr\|mean_F\|weights \* S_F_arr' ec_algorithm.py || echo 'WARNING: Weighted Lehmer mean NOT FOUND - REJECTED'; echo '--- Checking class/alias ---' && grep -n 'class DEOptimizer\|DEOptimizer =' ec_algorithm.py
++```
++
++If the grep finds `for i in range(pop_size)` or `for j in range(self.dim)` anywhere in the search loop, **STOP and rewrite using the vectorized NumPy pattern below**. Do not submit code that contains these loops.
++
++If `weighted Lehmer mean` / `mean_F` is not present in the SHADE memory update, **STOP and add it** — this is the missing piece separating you from the 0.93121 best score.
++
++## VECTORIZED IMPLEMENTATION PATTERN (USE THIS TO AVOID TIMEOUTS)
++If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate all mutant vectors as a NumPy array:
++
++```python
++# Example: vectorized current-to-pbest/1 mutation
++# pbest_idx: array of indices of pbest individuals for each i
++# r1, r2: arrays of random distinct indices
++# F_i: array of F values per individual
++# pop: current population array (n x d)
++mutants = pop[pbest_idx] + F_i[:, None] * (pop[r1] - pop[r2] + pop[archive_idx] - pop[r1])
++```
++
++Use fully vectorized NumPy operations for mutation, crossover, and selection. This is mandatory for performance — per-individual Python loops time out (gen_62 scored 0.8549 and timed out on many instances).
++
++## WEIGHTED LEHMER MEAN CODE (COPY-PASTE READY)
++Replace the SHADE memory update block with this:
++
++```python
++# Update SHADE memory with successful parameters using delta-fitness weighted Lehmer mean
++if len(S_F) > 0:
++    S_F_arr = np.array(S_F, dtype=float)
++    S_CR_arr = np.array(S_CR, dtype=float)
++    S_delta_arr = np.array(S_delta, dtype=float)
++    total_delta = float(np.sum(S_delta_arr))
++    if total_delta > 1e-30:
++        weights = S_delta_arr / total_delta
++    else:
++        weights = np.ones_like(S_delta_arr) / len(S_delta_arr)
++    if np.sum(weights * S_F_arr) > 1e-30:
++        mean_F = float(np.sum(weights * S_F_arr**2) / np.sum(weights * S_F_arr))
++    else:
++        mean_F = float(np.mean(S_F_arr))
++    mean_CR = float(np.sum(weights * S_CR_arr))
++    memory_F[memory_idx] = max(0.1, min(1.0, mean_F))
++    memory_CR[memory_idx] = max(0.0, min(1.0, mean_CR))
++    memory_idx = (memory_idx + 1) % memory_size
++```
++
++You must also track `S_delta.append(float(fitness[i] - trial_f))` whenever a trial is accepted (alongside `S_F.append(...)` and `S_CR.append(...)`).
++
++## STRICT REJECTION LIST (UPDATED FOR GEN_81):
++- ❌ **DO NOT just change `memory_size` or `archive_capacity` numeric constants** — gen_81 did this and only scored 0.9282 (below best 0.93121).
++- ❌ **DO NOT add LHS or quasi-random initialization** — gen_74 added LHS and scored 0.8846, below best 0.93121. Uniform random init is sufficient.
++- ❌ **DO NOT add new controller classes unless you are also modifying meta_learning.py to train them** — gen_74 added LSHADEHeuristicController but did not wire it into training, wasting effort.
++- ❌ **DO NOT make parameter tweaks to existing F/CR/pop_size values** — these are non-improvements.
++- ❌ **DO NOT modify the `optimize()` signature or return contract.**
++- ❌ **DO NOT modify any file under /hada/domains/**
+ 
+ ## ⚡ PROGRESSION / INCREMENTAL STACKING (READ THIS - DO NOT REPEAT THE SAME ALGORITHM):
+ - **If SHADE was already implemented** (check the diff in /hada/outputs/generate_20260828_142858_379759/gen_16/), **do NOT just tweak its constants**. STACK a new mechanism on top:

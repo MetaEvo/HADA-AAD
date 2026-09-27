@@ -1,0 +1,164 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index ea8cd0c..52f7f91 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -125,7 +125,32 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+    - [ ] The code can actually run without AttributeError or NameError
+    - [ ] Changes are incremental and don't break existing functionality
+ 
+-Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
++## 🚨 CRITICAL VECTORIZATION LESSON FROM GEN_42 (MUST PASS ON TO TASK AGENT):
++
++**gen_42 analysis showed the Task Agent implemented JADE, which is good (structural change happened!), but used `for j in range(self.dim)` nested loops inside the per-individual loop, causing the evaluation to be too slow and effectively wasted.** The next generation must ensure:
++
++- **NO nested Python loops over dimensions** - all population operations must be NumPy vectorized
++- The ONLY acceptable loop is `for i in range(pop_size):` that calls `evaluate_problem()` and increments `evals`
++- **Your updated task_agent.py prompt MUST include a mandatory grep check:**
++  ```
++  grep -n 'for j in range' /hada/metabbo/ec_algorithm.py
++  ```
++  If this prints ANY line, the Task Agent has FAILED and must rewrite using vectorized operations.
++
++- Also include a mandatory smoke test requirement: 20D sphere, 2000 evals, <30 seconds.
++- If the Task Agent got a structural change right but failed on performance, the next prompt should keep the structural-change guidance but add explicit vectorized code templates/patterns for the specific algorithm.
++
++## REQUIRED ACTIONS FOR THIS META-AGENT RUN:
++1. **Find the latest generation**: List `/hada/outputs/generate_20260828_142858_379759/` and identify the highest `gen_N` folder.
++2. **Read the Task Agent diff**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_N/<domain>_eval/agent_evals/all_patch.diff` to see what changed.
++3. **Read the Task Agent chat history**: Check whether the Task Agent actually used the `editor` tool.
++4. **If the diff only has parameter tweaks**: The updated task_agent.py prompt MUST be even more forceful about structural algorithm replacement.
++5. **If evaluations failed**: Read the generate.log for error messages, then update task_agent.py prompt to explicitly warn against those exact failure modes.
++6. **Always modify at least one of task_agent.py or hyper_agent.py** using editor str_replace.
++7. **After changes, write a summary to /hada/hyper_agent_improvements.md** (create/overwrite).
++8. **Verify the task_agent.py prompt includes**: FORBIDDEN FILES, PERFORMANCE/TIMEOUT WARNING, VECTORIZED IMPLEMENTATION PATTERN, CODE VERIFICATION CHECKLIST.
++
++Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms AND that structural changes are implemented efficiently (vectorized), and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+ 
+ GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code.
+ """
+diff --git a/task_agent.py b/task_agent.py
+index 0b1c2f7..67a9158 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -26,7 +26,69 @@ class TaskAgent(AgentSystem):
+                 - new_msg_history (list): A list of messages representing the message history of the interaction.
+         """
+         domain = inputs['domain']
+-        instruction = f"""You are an agent.
++        system_prompt = f"""You are an expert evolutionary computation engineer. Your task is to improve the evolutionary algorithm and/or meta-learning code in /hada/metabbo/ to maximize performance on the {domain} benchmark.
++
++You MUST make ACTUAL code changes to /hada/metabbo/ec_algorithm.py (the main optimizer) and/or /hada/metabbo/meta_learning.py (the meta-learning controller) using the `editor` tool with `command='str_replace'`. Do NOT just describe changes - actually edit the files.
++
++## CRITICAL: TRY DIFFERENT ALGORITHMS (NOT JUST PARAMETER TWEAKS)
++
++Previous agents have repeatedly only adjusted PSO/DE weights (w, c1, c2, F, CR) and never replaced the core algorithm - this causes scores to plateau. **You MUST make a structural change to the search algorithm itself.** For {domain}, strong options include:
++
++- **bbob_unconstrained**: DE, CMA-ES, SHADE, JADE, GLPSO, ES, etc.
++- **bbob_constrained**: C-DE, CMA-ES with constraints, SHADE with feasibility rules, etc.
++- **metabox_mt**: MFEA, MFEA-II, MFEA-DE, MFDE, CMT-DE, etc.
++- **metabox_mo**: NSGA-II, NSGA-III, MOEA/D, SPEA2, SMPSO, IBEA, etc.
++
++Also consider changing the meta-learning approach (e.g., PPO, Bayesian Optimization, L2O instead of DQN) if you modify meta_learning.py.
++
++## PERFORMANCE / TIMEOUT WARNING (READ BEFORE CODING)
++- Evaluations are run with limited compute budget. **Slow Python loops will cause timeout and score ZERO.**
++- You MUST use NumPy vectorized operations for all population-wide computations (mutation, crossover, repair, selection).
++- The ONLY acceptable Python loop is `for i in range(pop_size):` that (a) calls `evaluate_problem(problem, trial)` and (b) increments `evals`. Do NOT use nested loops like `for i in range(pop_size): for j in range(dim):`.
++- After editing, run this grep to confirm no nested dimension loop exists:
++  ```
++  grep -n 'for j in range' /hada/metabbo/ec_algorithm.py
++  ```
++  If it prints anything, rewrite that section vectorized.
++- Before finishing, run a quick smoke test (e.g., 20D sphere, 2000 evals) and ensure it completes in <30 seconds.
++
++## CHECK DOMAIN EVALUATION PATTERNS FIRST
++- ALWAYS inspect the domain folder (e.g., /hada/domains/{domain}/) to see how evaluation is called.
++- The evaluation function is typically a module-level function like `evaluate_problem(problem, x)` - DO NOT convert it to a class method like `self._eval_task()` unless you define it first.
++- Look at existing working code in the domain folder to understand the correct calling pattern before making changes.
++- If you introduce a new method, define it in the same file BEFORE calling it.
++
++## INCREMENTAL IMPROVEMENT STRATEGY
++- Focus on ONE functional module per generation (e.g., only the EA, OR only the meta-learning, OR only the population structure).
++- Do NOT change everything at once - this makes it impossible to identify what works.
++- Every generation MUST have a useful, actual code change - no empty modifications.
++
++## FORBIDDEN FILES (DO NOT EDIT)
++- /hada/config.py
++- /hada/domains/ (any file)
++- /hada/agent/ (any file)
++- /hada/utils/ (any file)
++- /hada/generate_loop.py
++- /hada/harness.py
++- /hada/report.py
++- /hada/task_agent.py
++- /hada/hyper_agent.py
++You may only edit files under /hada/metabbo/ (especially ec_algorithm.py, meta_learning.py, meta_learning_env.py, train_meta_learning.py, param_controller.py if justified).
++
++## CODE VERIFICATION CHECKLIST (BEFORE SUBMITTING)
++- [ ] I actually used `editor` with `str_replace` (REQUIRED)
++- [ ] I implemented a NEW algorithm or MAJOR mechanism, not just parameter tweaks
++- [ ] All method/function calls reference existing code
++- [ ] No undefined variables or methods
++- [ ] Function signatures match their callers (e.g., `optimize()` still returns `(gbest, stats)` with `stats['gbest_f']` and `stats['initial_gbest_f']`)
++- [ ] No nested `for j in range` loops in ec_algorithm.py
++- [ ] The code can actually run without AttributeError or NameError
++- [ ] Changes are incremental and don't break existing functionality
++- [ ] I ran a quick smoke test and it completed in <30 seconds
++
++Now edit the relevant code file(s) to improve performance on {domain}.
++"""
++        instruction = system_prompt + f"""
+ 
+ Task input:
+ ```
+diff --git a/hyper_agent_improvements.md b/hyper_agent_improvements.md
+new file mode 100644
+index 0000000..29b585d
+--- /dev/null
++++ b/hyper_agent_improvements.md
+@@ -0,0 +1,44 @@
++# Meta Agent Improvements
++
++## Changes Made
++
++### 1. /hada/task_agent.py - Completely Rewrote Agent Prompt
++
++**Problem identified**: The Task Agent's prompt was extremely minimal (just "You are an agent. Task input: ...") with no guidance about making actual code changes to the evolutionary algorithm.
++
++**Solution**: Replaced the minimal prompt with a comprehensive expert-level system prompt that includes:
++
++1. **Role**: Expert evolutionary computation engineer
++2. **Mandatory code changes**: Explicitly requires using `editor` with `str_replace` to modify `/hada/metabbo/ec_algorithm.py` or `meta_learning.py`
++3. **Algorithm diversity**: Lists specific alternative algorithms per domain (DE, CMA-ES, SHADE, JADE, GLPSO for bbob_unconstrained; MFEA/MFDE for metabox_mt; NSGA-II/III, MOEA/D for metabox_mo)
++4. **Performance/Timeout warning**: Warns that slow Python loops cause timeout/zero score; mandates NumPy vectorized operations; only allows `for i in range(pop_size)` loop for evaluation; includes `grep` verification command for nested loops
++5. **Domain pattern checking**: Requires checking `/hada/domains/{domain}/` to understand how evaluation is called
++6. **Incremental improvement strategy**: One functional module per generation
++7. **Forbidden files list**: Explicitly lists protected files
++8. **Verification checklist**: Includes the mandatory checklist before submission
++
++### 2. /hada/hyper_agent.py - Added Critical Vectorization Lesson
++
++**Problem identified**: gen_42 showed the Task Agent DID implement JADE (structural change - good!), but used nested Python loops (`for j in range(self.dim)`) which made it too slow and effectively wasted the structural improvement.
++
++**Solution**: Added a new critical section to the meta-agent prompt that:
++
++1. Documents the gen_42 lesson (JADE was implemented but with nested loops causing slowness)
++2. Explicitly mandates NO nested Python loops over dimensions
++3. Requires the task_agent.py prompt to include a mandatory `grep -n 'for j in range'` check
++4. Requires a smoke test (20D sphere, 2000 evals, <30s)
++5. Adds REQUIRED ACTIONS for the meta-agent to follow each run (find latest gen, read diff, read chat history, respond with appropriate prompt changes)
++
++## Rationale
++
++The key insight from gen_42 analysis:
++- Task Agent made a structural change (JADE) - this is exactly what we want!
++- BUT the implementation used nested Python loops causing performance failure
++- The fix is NOT to discourage structural changes, but to ensure they are vectorized
++- Both files now reinforce this critical lesson
++
++## Expected Impact
++
++- Task Agent should now make structural algorithm changes (not just parameter tweaks)
++- Structural changes should be implemented with NumPy vectorization (avoiding timeout failures)
++- Task Agent should follow a clear verification checklist before submitting changes
+\ No newline at end of file

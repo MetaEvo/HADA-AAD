@@ -1,0 +1,13 @@
+diff --git a/task_agent.py b/task_agent.py
+index dad7482..a3de74c 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -16,7 +16,7 @@ def _domain_algorithm_guidance(domain: str) -> str:
+     """Return domain-specific algorithm replacement guidance."""
+     if 'bbob_unconstrained' in domain or 'bbob' in domain:
+         return """
+-### RECOMMENDED REPLACEMENTS (pick ONE and implement fully):
++### RECOMMENDED REPLACEMENTS FOR bbob_unconstrained (pick ONE and implement fully):
+ 1. **L-SHADE** (best for BBOB): Keep the DE skeleton but add:
+    - Proper current-to-pbest/1 mutation with archive (the existing code only has a partial pbest, not a correct JADE-style archive)
+    - Linear Population Size Reduction (LPSR): shrink population size as budget is consumed

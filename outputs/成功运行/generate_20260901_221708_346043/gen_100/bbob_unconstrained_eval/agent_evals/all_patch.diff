@@ -1,0 +1,169 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 51063c2..e48f189 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -33,6 +33,17 @@ def evaluate_problem(problem, x):
+         return float(problem(x))
+ 
+ 
++def latin_hypercube_sampling(n, dim, lb, ub, rng):
++    """Generate a Latin Hypercube Sample of size n in [lb, ub]^dim."""
++    samples = np.zeros((n, dim))
++    for j in range(dim):
++        # Stratified random sampling in each dimension
++        u = (np.arange(n) + rng.rand(n)) / n
++        rng.shuffle(u)
++        samples[:, j] = lb[j] + u * (ub[j] - lb[j])
++    return samples
++
++
+ class DEOptimizer:
+     """Differential Evolution optimizer with DQN controller support.
+     
+@@ -88,8 +99,8 @@ class DEOptimizer:
+         effective_seed = seed if seed is not None else _config_seed
+         rng = np.random.RandomState(effective_seed)
+ 
+-        # Initialize population - uniform random initialization
+-        pop = rng.uniform(lb, ub, (pop_size, self.dim))
++        # Initialize population with Latin Hypercube Sampling for better coverage
++        pop = latin_hypercube_sampling(pop_size, self.dim, lb, ub, rng)
+         
+         # Evaluate initial population
+         evals = 0
+@@ -124,6 +135,8 @@ class DEOptimizer:
+         # Main loop
+         iteration = 0
+         done = False
++        no_improve_count = 0
++        restart_iter = int(self.params.get('restart_iter', 20))
+         
+         while not done:
+             iteration += 1
+@@ -137,12 +150,16 @@ class DEOptimizer:
+             
+             base_F = float(params.get('F', self.F))
+             base_CR = float(params.get('CR', self.CR))
++            pbest_rate = float(params.get('pbest_rate', 0.2))
++            archive_rate = float(params.get('archive_rate', 0.5))
++            strategy = params.get('strategy', 'jade')
++            restart_iter = int(params.get('restart_iter', restart_iter))
+             
+             prev_gbest_f = gbest_f
+ 
+             # Sort indices by fitness to support pbest selection
+             sorted_idx = np.argsort(fitness)
+-            pbest_num = max(1, int(0.2 * pop_size))
++            pbest_num = max(1, int(pbest_rate * pop_size))
+ 
+             # Per-individual parameters and success records
+             F_vals = np.zeros(pop_size)
+@@ -176,7 +193,7 @@ class DEOptimizer:
+                 r1 = int(rng.choice(candidates))
+ 
+                 # Choose r2 from archive (with probability) or from population
+-                use_archive = len(archive) > 0 and rng.rand() < 0.5
++                use_archive = len(archive) > 0 and rng.rand() < archive_rate
+                 if use_archive:
+                     idx2 = int(rng.randint(len(archive)))
+                     x_r2 = archive[idx2]
+@@ -192,8 +209,19 @@ class DEOptimizer:
+                 x_pbest = pop[pi]
+                 x_r1 = pop[r1]
+ 
+-                # current-to-pbest/1 with optional archive
+-                v = xi + F_vals[i] * (x_pbest - xi) + F_vals[i] * (x_r1 - x_r2)
++                # Mutation strategy: 'rand/1' for broad exploration, 'jade' for convergence
++                if strategy == 'rand/1':
++                    candidates3 = [idx for idx in range(pop_size) if idx != i and idx != r1]
++                    if len(candidates3) < 2:
++                        v = x_r1.copy()
++                    else:
++                        chosen = rng.choice(len(candidates3), size=2, replace=False)
++                        r2m = candidates3[int(chosen[0])]
++                        r3m = candidates3[int(chosen[1])]
++                        v = x_r1 + F_vals[i] * (pop[r2m] - pop[r3m])
++                else:
++                    # current-to-pbest/1 with optional archive
++                    v = xi + F_vals[i] * (x_pbest - xi) + F_vals[i] * (x_r1 - x_r2)
+ 
+                 # Binomial crossover
+                 u = np.copy(xi)
+@@ -238,6 +266,7 @@ class DEOptimizer:
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
++                        best_idx = i
+ 
+             # Update SHADE success-history memories
+             if len(S_F) > 0:
+@@ -259,6 +288,27 @@ class DEOptimizer:
+ 
+                 k_mem = (k_mem + 1) % H
+ 
++            # Stagnation detection: restart the population (keeping the global best)
++            if gbest_f < prev_gbest_f - 1e-12:
++                no_improve_count = 0
++            else:
++                no_improve_count += 1
++
++            if no_improve_count >= restart_iter and evals < self.max_evals - pop_size:
++                # Keep current global best and reinitialize the rest with LHS
++                new_pop = latin_hypercube_sampling(pop_size, self.dim, lb, ub, rng)
++                # Replace all except the current best individual
++                for ii in range(pop_size):
++                    if ii != best_idx:
++                        pop[ii] = new_pop[ii]
++                        fitness[ii] = evaluate_problem(problem, pop[ii])
++                        evals += 1
++                        if evals >= self.max_evals:
++                            break
++                # Refresh archive and stop records
++                archive = np.empty((0, self.dim))
++                no_improve_count = 0
++
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 6ca3bfd..6ebc168 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -66,7 +66,8 @@ class DummyHeuristicController(ParamController):
+         # Also support DE-style parameters for multi-objective DE optimizers
+         F = 0.9 - 0.5 * t  # Large mutation early, refined late
+         CR = 0.9 - 0.4 * t # More crossover early for diversity
+-        return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR}
++        return {'w': w, 'c1': c1, 'c2': c2, 'F': F, 'CR': CR,
++                'pbest_rate': 0.2, 'archive_rate': 0.5}
+ 
+ 
+ class AdaptiveDEController(ParamController):
+@@ -144,5 +145,11 @@ class AdaptiveDEController(ParamController):
+         if current_gbest_cv is not None and t > 0.5 and current_gbest_cv > epsilon:
+             epsilon = max(epsilon, min(current_gbest_cv * 0.5, self.epsilon_start))
+ 
++        # Adaptive pbest/archive rates: later use smaller pbest (more greed)
++        pbest_rate = 0.3 - 0.15 * t
++        archive_rate = 0.6 - 0.2 * t
++        restart_iter = 15 if t < 0.5 else 25
+         return {'F': float(F), 'CR': float(CR), 'strategy': strategy,
+-                'epsilon': float(epsilon)}
+\ No newline at end of file
++                'epsilon': float(epsilon),
++                'pbest_rate': float(pbest_rate), 'archive_rate': float(archive_rate),
++                'restart_iter': int(restart_iter)}
+\ No newline at end of file
+diff --git a/task_agent.py b/task_agent.py
+index a15ea6c..2f493ff 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -16,7 +16,7 @@ def _domain_algorithm_guidance(domain: str) -> str:
+     """Return domain-specific algorithm replacement guidance."""
+     if 'bbob_unconstrained' in domain or 'bbob' in domain:
+         return """
+-### 🚨🚨🚨 CRITICAL: THE CURRENT CODE IS **ALREADY SHADE** - DO NOT TWEAK IT FURTHER 🚨🚨🚨
++### 🚨🚨🚨 CRITICAL: THE CURRENT CODE IS **PARTIAL SHADE** - DO NOT TWEAK IT FURTHER 🚨🚨🚨
+ 
+ Look at `/hada/metabbo/ec_algorithm.py`. If you see `M_F`, `M_CR`, `archive`, `current-to-pbest/1`, `k_mem`, `H =`, `memory_index` — that means **SHADE is already implemented**. The last 30+ generations of task agents have only been tweaking SHADE constants (H, pbest_p, archive_cap, F/CR sampling). This has NOT improved the score. **Further SHADE tweaks are categorically REJECTED.**
+ 

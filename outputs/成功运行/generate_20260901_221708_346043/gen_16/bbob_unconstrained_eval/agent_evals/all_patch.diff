@@ -1,0 +1,151 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..171cc77 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -64,6 +64,14 @@ class DEOptimizer:
+         self.pop_size = swarm_size if swarm_size is not None else max(10, 5 * self.dim)
+         self.F = float(self.params.get('F', 0.5))
+         self.CR = float(self.params.get('CR', 0.5))
++        # SHADE/JADE adaptive strategy state
++        self.strategy = str(self.params.get('strategy', 'shade')).lower()
++        self.archive = []
++        self.archive_size = max(2 * self.pop_size, 40)
++        self.memory_size = 10
++        self.memory_F = np.full(self.memory_size, self.F)
++        self.memory_CR = np.full(self.memory_size, self.CR)
++        self.memory_idx = 0
+ 
+     def _tournament_select(self, fitness, tournsize, rng):
+         """Tournament selection with tournsize."""
+@@ -126,31 +134,66 @@ class DEOptimizer:
+             
+             F = float(params.get('F', self.F))
+             CR = float(params.get('CR', self.CR))
++            self.strategy = str(params.get('strategy', self.strategy)).lower()
+             
+             prev_gbest_f = gbest_f
+             
+-            # Generate trial vectors
++            # Generate trial vectors using SHADE/JADE adaptive strategy
+             new_pop = np.copy(pop)
++            trial_F = np.empty(pop_size, dtype=float)
++            trial_CR = np.empty(pop_size, dtype=float)
++            success_F = []
++            success_CR = []
++            success_f_diff = []
++            
++            # Sort indices by fitness for pbest selection
++            sorted_idx = np.argsort(fitness)
++            pbest_p = max(2, int(0.1 * pop_size))
++            
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
++                if self.strategy == 'shade':
++                    # Sample F from Cauchy distribution around a memory value
++                    mem_i = int(rng.randint(0, self.memory_size))
++                    F_i = self.memory_F[mem_i] + 0.1 * rng.standard_cauchy()
++                    while F_i <= 0:
++                        F_i = self.memory_F[mem_i] + 0.1 * rng.standard_cauchy()
++                    if F_i > 1.0:
++                        F_i = 1.0
++                    # Sample CR from Normal distribution around a memory value
++                    CR_i = float(np.clip(self.memory_CR[mem_i] + 0.1 * rng.randn(), 0.0, 1.0))
++                else:
++                    F_i = float(F)
++                    CR_i = float(CR)
++                trial_F[i] = F_i
++                trial_CR[i] = CR_i
++                
++                # current-to-pbest/1 mutation
++                pbest_idx = sorted_idx[rng.randint(0, pbest_p)]
++                x_pbest = pop[pbest_idx]
+                 candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
++                r1 = int(rng.choice(candidates))
++                candidates.remove(r1)
++                r2 = int(rng.choice(candidates))
++                x_r1 = pop[r1]
++                
++                # Second difference vector can come from the external archive
++                if len(self.archive) > 0 and rng.random() < 0.5:
++                    x_r2 = self.archive[rng.randint(0, len(self.archive))]
+                 else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
++                    x_r2 = pop[r2]
+                 
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
++                mutant = pop[i] + F_i * (x_pbest - pop[i]) + F_i * (x_r1 - x_r2)
+                 
+-                # Mutation and crossover
++                # Binomial crossover
+                 j_rand = rng.randint(0, self.dim)
+-                for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
++                mask = rng.random(self.dim) < CR_i
++                mask[j_rand] = True
++                new_pop[i] = np.where(mask, mutant, pop[i])
+                 
+                 # Boundary handling: clip
+                 new_pop[i] = np.clip(new_pop[i], lb, ub)
+             
+-            # Evaluate trial vectors
++            # Evaluate trial vectors and perform greedy selection
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+@@ -160,12 +203,36 @@ class DEOptimizer:
+                 
+                 # Greedy selection
+                 if trial_f < fitness[i]:
++                    # Add replaced individual to archive for SHADE
++                    if self.strategy == 'shade':
++                        self.archive.append(pop[i].copy())
++                        if len(self.archive) > self.archive_size:
++                            del self.archive[int(rng.randint(0, len(self.archive)))]
++                    
++                    success_F.append(trial_F[i])
++                    success_CR.append(trial_CR[i])
++                    success_f_diff.append(fitness[i] - trial_f)
++                    
+                     pop[i] = new_pop[i].copy()
+                     fitness[i] = trial_f
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+             
++            # Update SHADE parameter memory using weighted Lehmer means
++            if self.strategy == 'shade' and len(success_F) > 0:
++                weights = np.asarray(success_f_diff, dtype=float)
++                total_w = np.sum(weights)
++                if total_w > 1e-12:
++                    weights = weights / total_w
++                    f_arr = np.asarray(success_F, dtype=float)
++                    cr_arr = np.asarray(success_CR, dtype=float)
++                    mean_F = float(np.sum(weights * f_arr**2) / np.sum(weights * f_arr)) if np.sum(weights * f_arr) > 1e-12 else float(np.mean(f_arr))
++                    mean_CR = float(np.sum(weights * cr_arr**2) / np.sum(weights * cr_arr)) if np.sum(weights * cr_arr) > 1e-12 else float(np.mean(cr_arr))
++                    self.memory_F[self.memory_idx] = mean_F
++                    self.memory_CR[self.memory_idx] = mean_CR
++                    self.memory_idx = (self.memory_idx + 1) % self.memory_size
++            
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+diff --git a/task_agent.py b/task_agent.py
+index 5a8a489..b140846 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -27,9 +27,9 @@ class TaskAgent(AgentSystem):
+         """
+         domain = inputs.get('domain', 'bbob_unconstrained')
+         
+-        # Build a persistent system prompt that forces the Task Agent to make
+-        # ACTUAL code changes to /hada/metabbo/ec_algorithm.py
+-        system_prompt = f"""You are an expert evolutionary computation researcher. Your job is to IMPROVE the evolutionary algorithm code by ACTUALLY MODIFYING FILES.
++        # Build a concise, high-impact system prompt.
++        # KEEP SHORT to avoid LLM context overflow.
++        system_prompt = f"""You are an expert evolutionary computation researcher. Your job: IMPROVE the evolutionary algorithm by ACTUALLY EDITING `/hada/metabbo/ec_algorithm.py`.
+ 
+ ## CRITICAL: YOU MUST MODIFY CODE - NOT DESCRIBE CHANGES
+ You MUST use the `editor` tool with command='str_replace' to modify actual source code files. You have access to the editor and bash tools. Do NOT just write a response describing what you would change - you must actually change it.

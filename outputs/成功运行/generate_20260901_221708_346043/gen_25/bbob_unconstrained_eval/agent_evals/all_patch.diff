@@ -1,0 +1,266 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5fd2466..b7dcf7c 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -143,10 +143,12 @@ class DEOptimizer:
+             # Optional controller override (still supported, but SHADE also adapts internally)
+             ctrl_F = float(params.get('F', self.F))
+             ctrl_CR = float(params.get('CR', self.CR))
++            ctrl_strategy = str(params.get('strategy', 'shade'))
+             
+             progress = min(1.0, evals / max(1.0, self.max_evals))
+             # More exploitation as the budget is consumed
+-            pbest_p = max(0.05, 0.2 * (1.0 - progress))
++            # Adaptive pbest pool size: larger early for exploration, smaller later for convergence
++            pbest_p = max(0.05, float(params.get('pbest_p', 0.2 * (1.0 - progress) + 0.05)))
+             
+             prev_gbest_f = gbest_f
+             pop_old = pop.copy()
+@@ -160,7 +162,8 @@ class DEOptimizer:
+             pbest_num = max(1, int(pop_size * pbest_p))
+             pbest_indices = sorted_idx[:pbest_num]
+             
+-            # Generate trial vectors using SHADE current-to-pbest/1
++            # Generate trial vectors with strategy selection (SHADE/JADE rand/1, etc.)
++            use_archive = ctrl_strategy in ('shade', 'jade', 'current-to-pbest/1')
+             for i in range(pop_size):
+                 # Sample F_i from Cauchy distribution based on history memory
+                 mi = int(rng.randint(memory_size))
+@@ -176,37 +179,82 @@ class DEOptimizer:
+                 F_i_values[i] = F_i
+                 CR_i_values[i] = CR_i
+                 
+-                # Choose pbest from top pbest_p individuals
+-                pbest_i = int(pbest_indices[int(rng.randint(len(pbest_indices)))])
+-                pbest_x = pop[pbest_i]
+-                
+-                # current-to-pbest/1 mutation
+-                base = pop[i] + F_i * (pbest_x - pop[i])
+-                
+-                # r1 from population, r2 from population or archive
+-                r1 = int(rng.randint(pop_size))
+-                while r1 == i:
++                # Choose three distinct random indices r1, r2, r3 != i (r3 optional for archive)
++                indices = [j for j in range(pop_size) if j != i]
++                if len(indices) < 2:
+                     r1 = int(rng.randint(pop_size))
+-                candidate_r2 = [idx for idx in range(pop_size) if idx != i and idx != r1]
+-                if len(archive) > 0:
+-                    candidate_r2 += [pop_size + j for j in range(len(archive))]
+-                if len(candidate_r2) < 1:
++                    while r1 == i:
++                        r1 = int(rng.randint(pop_size))
+                     r2 = int(rng.randint(pop_size))
+-                    x2 = pop[r2]
++                    while r2 == i or r2 == r1:
++                        r2 = int(rng.randint(pop_size))
++                    r3 = int(rng.randint(pop_size))
++                    while r3 == i or r3 == r1 or r3 == r2:
++                        r3 = int(rng.randint(pop_size))
+                 else:
+-                    r2 = int(candidate_r2[int(rng.randint(len(candidate_r2)))])
+-                    if r2 >= pop_size:
+-                        x2 = archive[r2 - pop_size]
++                    r1 = int(indices[int(rng.randint(len(indices)))])
++                    remaining = [j for j in indices if j != r1]
++                    r2 = int(remaining[int(rng.randint(len(remaining)))])
++                    remaining2 = [j for j in remaining if j != r2]
++                    if len(remaining2) < 1:
++                        r3 = int(rng.randint(pop_size))
+                     else:
+-                        x2 = pop[r2]
++                        r3 = int(remaining2[int(rng.randint(len(remaining2)))])
++                x1 = pop[r1]
++                x2 = pop[r2]
++                x3 = pop[r3]
+                 
+-                mutant = base + F_i * (pop[r1] - x2)
++                # Strategy-specific mutation
++                if ctrl_strategy in ('shade', 'jade', 'current-to-pbest/1'):
++                    # current-to-pbest/1 with optional archive
++                    pbest_i = int(pbest_indices[int(rng.randint(len(pbest_indices)))])
++                    pbest_x = pop[pbest_i]
++                    base = pop[i] + F_i * (pbest_x - pop[i])
++                    
++                    if use_archive and len(archive) > 0:
++                        # r2 from population or archive
++                        candidate_r2 = [j for j in range(pop_size) if j != i and j != r1]
++                        candidate_r2 += [pop_size + j for j in range(len(archive))]
++                        r2 = int(candidate_r2[int(rng.randint(len(candidate_r2)))])
++                        if r2 >= pop_size:
++                            x2 = archive[r2 - pop_size]
++                        else:
++                            x2 = pop[r2]
++                    
++                    mutant = base + F_i * (x1 - x2)
++                elif ctrl_strategy == 'rand/1':
++                    mutant = x1 + F_i * (x2 - x3)
++                elif ctrl_strategy == 'current-to-best/1':
++                    best_x = pop[int(np.argmin(fitness))]
++                    base = pop[i] + F_i * (best_x - pop[i])
++                    mutant = base + F_i * (x1 - x2)
++                elif ctrl_strategy == 'best/1':
++                    best_x = pop[int(np.argmin(fitness))]
++                    mutant = best_x + F_i * (x1 - x2)
++                elif ctrl_strategy == 'rand-to-best/1':
++                    best_x = pop[int(np.argmin(fitness))]
++                    base = x1 + F_i * (best_x - x1)
++                    mutant = base + F_i * (x2 - x3)
++                else:
++                    # Default to SHADE current-to-pbest/1
++                    pbest_i = int(pbest_indices[int(rng.randint(len(pbest_indices)))])
++                    pbest_x = pop[pbest_i]
++                    base = pop[i] + F_i * (pbest_x - pop[i])
++                    mutant = base + F_i * (x1 - x2)
+                 
+                 # Binomial crossover
+                 j_rand = int(rng.randint(self.dim))
+                 mask = rng.random(self.dim) < CR_i
+                 mask[j_rand] = True
+                 trial = np.where(mask, mutant, pop[i])
++                
++                # Boundary handling: reflection to preserve diversity and improve exploration
++                width = ub - lb
++                for d in range(self.dim):
++                    if trial[d] < lb[d]:
++                        trial[d] = lb[d] + (lb[d] - trial[d]) % width[d]
++                    elif trial[d] > ub[d]:
++                        trial[d] = ub[d] - (trial[d] - ub[d]) % width[d]
+                 trial = np.clip(trial, lb, ub)
+                 new_pop[i] = trial
+             
+@@ -235,10 +283,17 @@ class DEOptimizer:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+             
+-            # Update SHADE memory with successful parameters
++            # Update SHADE memory with success parameters using Lehmer mean (more robust)
+             if len(S_F) > 0:
+-                memory_F[memory_idx] = float(np.mean(S_F))
+-                memory_CR[memory_idx] = float(np.mean(S_CR))
++                S_F_arr = np.asarray(S_F, dtype=float)
++                S_CR_arr = np.asarray(S_CR, dtype=float)
++                # Lehmer mean for F: sum(F^2)/sum(F)
++                if np.sum(S_F_arr) > 1e-12:
++                    memory_F[memory_idx] = float(np.sum(S_F_arr * S_F_arr) / np.sum(S_F_arr))
++                else:
++                    memory_F[memory_idx] = float(np.mean(S_F_arr))
++                # Weighted arithmetic mean for CR
++                memory_CR[memory_idx] = float(np.mean(S_CR_arr))
+                 memory_idx = (memory_idx + 1) % memory_size
+             
+             # Stagnation detection: restart worst individuals if no improvement for several iterations
+@@ -248,15 +303,24 @@ class DEOptimizer:
+                 stagnation_count += 1
+             
+             if stagnation_count >= 5:
+-                n_restart = max(1, int(pop_size * 0.15))
++                n_restart = max(1, int(pop_size * 0.2))
+                 worst_idx = np.argsort(fitness)[-n_restart:]
+-                sigma = (ub - lb) * 0.02 * (1.0 + progress)
++                # Adaptive restart radius: larger early, smaller late
++                sigma_scale = 0.05 * (1.0 - progress) + 0.005
++                sigma = (ub - lb) * sigma_scale
+                 for idx in worst_idx:
+                     if evals >= self.max_evals:
+                         break
+-                    if rng.random() < 0.5:
++                    if rng.random() < 0.6:
++                        # Local restart around best with adaptive radius
+                         pop[idx] = np.clip(gbest + sigma * rng.randn(self.dim), lb, ub)
++                    elif rng.random() < 0.7:
++                        # Differential-like restart using random pair
++                        a = int(rng.randint(pop_size))
++                        b = int(rng.randint(pop_size))
++                        pop[idx] = np.clip(pop[a] + F_i_values[idx] * (pop[a] - pop[b]), lb, ub)
+                     else:
++                        # Full random restart to maintain diversity
+                         pop[idx] = rng.uniform(lb, ub, self.dim)
+                     fitness[idx] = evaluate_problem(problem, pop[idx])
+                     evals += 1
+@@ -264,6 +328,9 @@ class DEOptimizer:
+                         gbest_f = fitness[idx]
+                         gbest = pop[idx].copy()
+                 stagnation_count = 0
++                # Also clear archive occasionally to avoid stale guidance
++                if len(archive) > 0 and rng.random() < 0.3:
++                    archive = np.empty((0, self.dim))
+             
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 01ba422..58f53a4 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -69,21 +69,19 @@ class DummyHeuristicController(ParamController):
+ 
+ 
+ class AdaptiveDEController(ParamController):
+-    """Adaptive controller for DE/JADE algorithms with epsilon-constrained support.
++    """Adaptive controller for DE/SHADE/JADE algorithms with epsilon-constrained support.
+ 
+     - Early iterations: high F (exploration), high CR (diversity),
+-      use 'rand/1' strategy to explore broadly.
++      use 'rand/1' or 'rand-to-best/1' strategy to explore broadly.
++    - Middle iterations: moderate F/CR with 'current-to-pbest/1' (JADE/SHADE).
+     - Late iterations: lower F (exploitation), moderate CR (retain
+-      good building blocks), switch to 'jade' for fast convergence.
+-    - Uses stagnation detection to temporarily boost F/CR.
+-    - Provides a decaying epsilon relaxation for epsilon-constrained handling,
+-      allowing the optimizer to explore mildly infeasible regions early and
+-      enforcing feasibility as the budget is consumed.
+-    - If constraint violations are still large late in the run, epsilon is kept
+-      nonzero to avoid discarding useful search directions prematurely.
++      good building blocks), switch to 'current-to-best/1' for fast convergence.
++    - Uses stagnation detection to temporarily boost F/CR and change strategy.
++    - Provides a decaying epsilon relaxation for epsilon-constrained handling.
++    - Also outputs an adaptive pbest_p for the current-to-pbest/1 mutation pool.
+     """
+-    def __init__(self, f_start=0.9, f_end=0.3, cr_start=0.9, cr_end=0.4,
+-                 strategy_change_iter=0.3, stagnation_boost=0.2,
++    def __init__(self, f_start=0.9, f_end=0.25, cr_start=0.9, cr_end=0.35,
++                 strategy_change_iter=(0.3, 0.7), stagnation_boost=0.15,
+                  epsilon_start=1e-2, epsilon_end=1e-8):
+         self.f_start = f_start
+         self.f_end = f_end
+@@ -118,17 +116,27 @@ class AdaptiveDEController(ParamController):
+                 self.stagnation_count += 1
+         self.last_gbest = current_gbest
+ 
+-        # If stagnated for a while, add extra diversity
++        # If stagnated for a while, add extra diversity and switch to more exploratory strategy
+         if self.stagnation_count > 5:
+             F = min(1.0, F + self.stagnation_boost)
+             CR = min(1.0, CR + self.stagnation_boost)
+             self.stagnation_count = 0
+-
+-        # Switch strategy: rand/1 early for exploration, jade later for convergence
+-        if t < self.strategy_change_iter:
+             strategy = 'rand/1'
+         else:
+-            strategy = 'jade'
++            # Multi-phase strategy scheduling for better exploration/exploitation balance
++            t_low, t_high = self.strategy_change_iter
++            if t < t_low:
++                # Early exploration
++                strategy = 'rand-to-best/1'
++            elif t < t_high:
++                # Mid optimization: adaptive pbest with archive (SHADE-style)
++                strategy = 'shade'
++            else:
++                # Late exploitation
++                strategy = 'current-to-best/1'
++
++        # Adaptive pbest pool size for current-to-pbest mutations
++        pbest_p = 0.3 * (1.0 - t) + 0.05
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+@@ -144,4 +152,4 @@ class AdaptiveDEController(ParamController):
+             epsilon = max(epsilon, min(current_gbest_cv * 0.5, self.epsilon_start))
+ 
+         return {'F': float(F), 'CR': float(CR), 'strategy': strategy,
+-                'epsilon': float(epsilon)}
+\ No newline at end of file
++                'pbest_p': float(pbest_p), 'epsilon': float(epsilon)}
+\ No newline at end of file

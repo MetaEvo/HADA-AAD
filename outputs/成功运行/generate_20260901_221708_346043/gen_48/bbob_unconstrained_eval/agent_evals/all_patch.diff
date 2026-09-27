@@ -1,0 +1,252 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..498fedd 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -110,10 +110,17 @@ class DEOptimizer:
+         initial_population_positions = pop.copy()
+         initial_population_fitness = fitness.copy()
+ 
+-        # Main loop
++        # Main loop: JADE-style adaptive Differential Evolution
+         iteration = 0
+         done = False
+-        
++        # JADE parameter memory and external archive
++        mu_F = float(self.F)
++        mu_CR = float(self.CR)
++        archive = []
++        max_archive = max(5, pop_size * 2)
++        c_adapt = 0.1
++        pbest_fraction = 0.15
++
+         while not done:
+             iteration += 1
+             params = dict(self.params)
+@@ -123,52 +130,94 @@ class DEOptimizer:
+                 step_params = self.controller.step(obs)
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+-            
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
+-            
++
++            # The controller's F/CR act as a prior on the JADE means.
++            controller_F = float(params.get('F', mu_F))
++            controller_CR = float(params.get('CR', mu_CR))
++            # Blend controller suggestion with learned JADE memory values.
++            mu_F = float(np.clip(0.3 * controller_F + 0.7 * mu_F, 0.1, 1.0))
++            mu_CR = float(np.clip(0.3 * controller_CR + 0.7 * mu_CR, 0.0, 1.0))
++
+             prev_gbest_f = gbest_f
+-            
+-            # Generate trial vectors
+-            new_pop = np.copy(pop)
+-            for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
+-                else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
+-                
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
+-                
+-                # Mutation and crossover
+-                j_rand = rng.randint(0, self.dim)
+-                for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
+-                
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
+-            
+-            # Evaluate trial vectors
++            successful_F = []
++            successful_CR = []
++
++            # Indices of the best individuals for pbest mutation.
++            order = np.argsort(fitness)
++            pbest_n = max(1, int(pop_size * pbest_fraction))
++
++            # Build a pool containing population indices and archive indices.
++            pool_indices = list(range(pop_size)) + [pop_size + j for j in range(len(archive))]
++
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+                     break
+-                trial_f = evaluate_problem(problem, new_pop[i])
++
++                # Per-individual control parameters
++                fi = float(np.clip(mu_F + 0.15 * rng.standard_cauchy(), 0.05, 1.2))
++                cri = float(np.clip(mu_CR + 0.1 * rng.randn(), 0.0, 0.98))
++
++                # pbest: one of the current best p% members
++                p_idx = order[rng.randint(0, pbest_n)]
++                x_pbest = pop[p_idx]
++
++                # Two distinct donors from population plus archive (excluding current i)
++                valid_pool = [idx for idx in pool_indices if not (idx < pop_size and idx == i)]
++                chosen = rng.choice(valid_pool, size=2, replace=False) if len(valid_pool) >= 2 else None
++                if chosen is None:
++                    r1_abs = rng.randint(0, pop_size)
++                    r2_abs = rng.randint(0, pop_size)
++                else:
++                    r1_abs = int(chosen[0])
++                    r2_abs = int(chosen[1])
++
++                def _get_individual(abs_idx):
++                    if abs_idx < pop_size:
++                        return pop[abs_idx]
++                    return archive[abs_idx - pop_size]
++
++                r1 = _get_individual(r1_abs)
++                r2 = _get_individual(r2_abs)
++
++                # current-to-pbest/archive mutation (JADE style)
++                mutant = pop[i] + fi * (x_pbest - pop[i]) + fi * (r1 - r2)
++                mutant = np.clip(mutant, lb, ub)
++
++                # Binomial crossover
++                j_rand = rng.randint(0, self.dim)
++                mask = rng.random(self.dim) < cri
++                mask[j_rand] = True
++                trial = np.where(mask, mutant, pop[i])
++                trial = np.clip(trial, lb, ub)
++
++                trial_f = evaluate_problem(problem, trial)
+                 evals += 1
+-                
+-                # Greedy selection
++
+                 if trial_f < fitness[i]:
+-                    pop[i] = new_pop[i].copy()
++                    # Store the displaced parent in the external archive.
++                    if len(archive) >= max_archive:
++                        archive.pop(rng.randint(0, max_archive))
++                    archive.append(pop[i].copy())
++                    pop[i] = trial.copy()
+                     fitness[i] = trial_f
++                    successful_F.append(fi)
++                    successful_CR.append(cri)
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+-                        gbest = new_pop[i].copy()
+-            
++                        gbest = trial.copy()
++
++            # Update JADE parameter memory using successful generations.
++            if successful_F:
++                sum_sq = sum(f * f for f in successful_F)
++                sum_f = sum(successful_F)
++                if sum_f > 0:
++                    mu_F = float(np.clip((1.0 - c_adapt) * mu_F + c_adapt * (sum_sq / sum_f), 0.1, 1.0))
++                mu_CR = float(np.clip((1.0 - c_adapt) * mu_CR + c_adapt * float(np.mean(successful_CR)), 0.0, 1.0))
++
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+-            
++
+             # Store transition in controller's replay buffer
+             if self.controller is not None and train:
+                 next_obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 
+@@ -176,7 +225,7 @@ class DEOptimizer:
+                 done = (evals >= self.max_evals)
+                 if hasattr(self.controller, 'store_reward'):
+                     self.controller.store_reward(improved, next_obs, done)
+-            
++
+             done = (evals >= self.max_evals)
+ 
+         self.stats = {
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..01ba422 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -6,6 +6,7 @@ the hook that a DQN-based controller should implement.
+ """
+ from abc import ABC, abstractmethod
+ from typing import Dict, Any
++import numpy as np
+ 
+ # Import global configuration
+ import sys
+@@ -131,10 +132,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(np.log(self.epsilon_start))
++        log_eps_end = float(np.log(self.epsilon_end))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(np.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 26e6bef..021b1b8 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -148,7 +148,7 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ ## ANALYSIS GUIDANCE (what to look at before making changes):
+ 
+-1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes.
++1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes. If the diff shows a JADE implementation but MISSING L-SHADE components (LPSR, restart, success-history memory), the next task_agent.py prompt must explicitly require those missing components. **JADE-only scores ~0.886 (gen_47), while full L-SHADE scores 0.931 (gen_11) - merely upgrading from DE to JADE is NOT enough; the prompt must insist on the full L-SHADE package.**
+ 
+ 2. **ALWAYS check if the Task Agent actually used the editor tool** by looking at chat_history_task_agent.md. If the Task Agent only described changes without applying them, your prompt must be more explicit about using the editor tool.
+ 
+diff --git a/task_agent.py b/task_agent.py
+index 377b4d2..5f43603 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -84,9 +84,9 @@ You MUST make a **structural change to the core search mechanism**:
+ 
+ ### 🔥 CURRENT STATE OF THE ART (READ THIS BEFORE YOU START):
+ - **BEST-KNOWN SCORE = 0.93121** (gen_11, L-SHADE: Success-History Adaptive DE + **Linear Population Size Reduction (LPSR)** + **stagnation-triggered restart**). Winning diff: `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff`
+-- **gen_19 scored 0.9019** with a JADE implementation (current-to-pbest/1 + external archive + adaptive mu_F/mu_CR). It WAS a genuine structural improvement, but it is STILL BELOW the gen_11 L-SHADE score.
+-- **Why L-SHADE beat JADE**: L-SHADE adds (a) **LPSR** - shrink the population linearly as evaluation budget is consumed, and (b) **restart when diversity collapses** - reinitialize the worst ~80% while keeping the best. These two mechanisms are what pushed the score above 0.93.
+-- **Your #1 job**: Read the gen_11 winning diff FIRST (see workflow step 3 below), then implement L-SHADE with LPSR + restart. If JADE/L-SHADE core is already present, ADD the missing mechanisms (LPSR, restart, local search, OBL, multi-operator ensemble) on top - do NOT merely re-plumb existing constants through the controller.
++- **gen_47 scored 0.8864** with JADE-only (archive + current-to-pbest + adaptive F/CR but NO LPSR, NO success-history memory, NO restart). This is a REAL structural change but STILL BELOW the gen_11 L-SHADE score. **If your implementation is JADE-only, you will likely score around 0.88, not 0.93.**
++- **Why L-SHADE beat JADE**: L-SHADE adds (a) **LPSR** - shrink the population linearly as evaluation budget is consumed, (b) **restart when diversity collapses** - reinitialize the worst ~80% while keeping the best, and (c) **success-history parameter memory** with weighted Lehmer mean (SHADE memory, not just a single moving mean). These mechanisms are what pushed the score above 0.93.
++- **YOUR #1 JOB IS NON-NEGOTIABLE**: Read the gen_11 winning diff FIRST (see workflow step 3 below), then implement the **FULL L-SHADE** with ALL of: SHADE success-history memory (memory_F/memory_CR arrays updated with weighted Lehmer mean), current-to-pbest/1 mutation, external archive, LPSR, and stagnation-triggered restart. **If you only implement JADE (even vectorized), you are NOT done. The prompt below explicitly requires LPSR and restart; a diff without them will be considered incomplete.**
+ 
+ ### ⚠️ KNOWN FAILURE MODES TO AVOID (from actual past generations):
+ 1. **gen_17 regression (score 0.8157)**: Making hardcoded JADE constants configurable via controller params (`0.2` pbest pool → `params.get('pbest_rate', 0.2)`) is NOT a structural change. Plumbing parameters does NOT improve the algorithm.
+@@ -192,17 +192,24 @@ new_pop = trials
+ 
+ ## MANDATORY WORKFLOW - FOLLOW THESE STEPS:
+ 1. **READ the domain code**: Use editor view on `/hada/domains/{domain}/dqn_de_util.py` to understand exactly how your code is called and scored
+-2. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py`
+-3. **READ the best-known winning diff (gen_11, score 0.93121)**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this shows exactly what structural L-SHADE changes (success-history memory, current-to-pbest/1, external archive, **LPSR**, **restart on stagnation**) produced the best score. **If your planned change is NOT at least as sophisticated as that diff, stop and rethink.**
+-4. **READ the meta-learning code**: Use editor view on `/hada/metabbo/meta_learning.py`
+-5. **MAKE your changes**: Use editor str_replace to actually modify the code files
++2. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py` - it is currently basic DE (or JADE from a previous generation). **Note whether JADE is already present**: if JADE archive/current-to-pbest/adaptive-F is there but LPSR/restart/memory are missing, your job is to ADD those missing L-SHADE components, NOT to reimplement JADE again.
++3. **READ the best-known winning diff (gen_11, score 0.93121)**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this shows exactly what structural L-SHADE changes (success-history memory, current-to-pbest/1, external archive, **LPSR**, **restart on stagnation**) produced the best score. **If your planned change is NOT at least as sophisticated as that diff, stop and rethink** - in particular, you MUST plan to add ALL of: (a) memory_F/memory_CR with weighted Lehmer mean, (b) LPSR, (c) stagnation restart, (d) archive, (e) current-to-pbest/1.
++4. **Optional: also read the gen_47 JADE-only diff** at `/hada/outputs/generate_20260828_142858_379759/gen_47/bbob_unconstrained_eval/agent_evals/all_patch.diff` to see the JADE-only implementation that scored 0.8864 - this is a good reference for the JADE core, but you must ADD LPSR + restart + memory on top to beat 0.93.
++5. **READ the meta-learning code**: Use editor view on `/hada/metabbo/meta_learning.py`
++6. **MAKE your changes**: Use editor str_replace to actually modify the code files
+    - **YOU MUST call `editor` with command='str_replace' at least once to modify `/hada/metabbo/ec_algorithm.py`**
+    - **If you have not modified ec_algorithm.py with a structural algorithm change, your response is INCOMPLETE.**
+-6. **VERIFY your diff is structural**: Re-read the modified `ec_algorithm.py` and confirm you changed core search logic (mutation/crossover/selection/adaptation), not just numeric constants. If your diff only makes existing constants configurable via controller params, it will score poorly and is NOT acceptable.
+-7. **VERIFY you included the gen_11 winning mechanisms**: Confirm your implementation includes at least TWO of: (a) Success-History parameter memory (memory_F/memory_CR with Lehmer mean update), (b) Linear Population Size Reduction (LPSR - population shrinks as evals budget is consumed), (c) stagnation-triggered restart/diversity recovery, (d) external archive of inferior solutions. **If you only implemented plain JADE without LPSR/restart, you are leaving score on the table.**
+-8. **VERIFY vectorization**: Make sure mutation/crossover is implemented with NumPy array ops (e.g., `rng.random((n, self.dim))` masks), NOT per-individual Python `for i in range(pop_size)` with inner `for j in range(self.dim)` loops. The gen_19 JADE used Python per-individual loops and scored 0.9019; vectorized L-SHADE scored 0.93121.
+-9. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
+-10. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++7. **VERIFY your diff is structural**: Re-read the modified `ec_algorithm.py` and confirm you changed core search logic (mutation/crossover/selection/adaptation), not just numeric constants. If your diff only makes existing constants configurable via controller params, it will score poorly and is NOT acceptable.
++8. **VERIFY you included the gen_11 winning mechanisms**: Confirm your implementation includes **ALL** of the following L-SHADE components (not just two, not just JADE):
++   - (a) Success-History parameter memory: `memory_F`/`memory_CR` arrays (size H, e.g., 10) updated with **weighted Lehmer mean** of successful F/CR each generation
++   - (b) **Linear Population Size Reduction (LPSR)**: the active population `current_n` shrinks linearly as `evals/max_evals` increases (e.g., from `pop_size` down to `max(4, 0.15*pop_size)`)
++   - (c) **stagnation-triggered restart/diversity recovery**: when the best fitness has not improved for N generations (e.g., 5), reinitialize the worst ~80% of the population around the current best (Gaussian perturbation with std proportional to remaining budget)
++   - (d) external archive of inferior solutions (JADE/SHADE style, bounded size)
++   - (e) current-to-pbest/1 mutation with pbest pool ~15% of population
++   **If you only implement plain JADE without LPSR+restart, you will score about 0.88 like gen_47, NOT 0.93+. The task is to EXCEED the best-known score, so LPSR and restart are not optional - they are MANDATORY.**
++9. **VERIFY vectorization**: Make sure mutation/crossover is implemented with NumPy array ops (e.g., `rng.random((n, self.dim))` masks), NOT per-individual Python `for i in range(pop_size)` with inner `for j in range(self.dim)` loops. The gen_19 JADE used Python per-individual loops and scored 0.9019; vectorized L-SHADE scored 0.93121.
++10. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
++11. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
+ 
+ ## ⚠️ PERFORMANCE AND TIMEOUT WARNING (CRITICAL - A TIMEOUT SCORES ZERO):
+ Previous attempts that structurally upgraded the algorithm (e.g., L-SHADE) sometimes became **so slow that the evaluation timed out (>120 seconds on a simple sphere problem with only 2000 evals)**. A timeout means the entire generation scores ZERO, which is worse than no change at all.

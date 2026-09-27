@@ -1,0 +1,157 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..37437b5 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -113,7 +113,22 @@ class DEOptimizer:
+         # Main loop
+         iteration = 0
+         done = False
+-        
++
++        # JADE adaptation state
++        archive = np.empty((0, self.dim))
++        max_archive_size = pop_size
++        mu_F = 0.5
++        mu_CR = 0.5
++        pbest_rate = 0.1
++        c_adapt = 0.1
++
++        def reinit_individual(base):
++            r = base.copy()
++            out = (r < lb) | (r > ub)
++            if np.any(out):
++                r[out] = rng.uniform(lb[out], ub[out])
++            return r
++
+         while not done:
+             iteration += 1
+             params = dict(self.params)
+@@ -124,47 +139,81 @@ class DEOptimizer:
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+             
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
+-            
++            # Controller-provided F/CR act as a bias; blend with adapted memory values
++            ctrl_F = float(params.get('F', mu_F))
++            ctrl_CR = float(params.get('CR', mu_CR))
++            gen_mu_F = 0.5 * mu_F + 0.5 * ctrl_F
++            gen_mu_CR = 0.5 * mu_CR + 0.5 * ctrl_CR
++
+             prev_gbest_f = gbest_f
+             
+-            # Generate trial vectors
++            # JADE current-to-pbest/1 with archive and parameter adaptation
+             new_pop = np.copy(pop)
++            new_pop_params = [None] * pop_size
++            S_F = []
++            S_CR = []
++            n_pbest = max(1, int(pop_size * pbest_rate))
++            order = np.argsort(fitness)
++
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
++                F_i = float(np.clip(gen_mu_F + 0.1 * rng.randn(), 0.1, 1.0))
++                CR_i = float(np.clip(gen_mu_CR + 0.1 * rng.randn(), 0.0, 1.0))
++                pbest_idx = int(order[rng.randint(0, n_pbest)])
++                candidates = [idx for idx in range(pop_size) if idx != i and idx != pbest_idx]
++                if len(candidates) < 2:
++                    candidates = [idx for idx in range(pop_size) if idx != i]
++                if len(candidates) >= 2:
++                    r1, r2 = rng.choice(candidates, size=2, replace=False)
++                else:
++                    r1 = i
++                    r2 = i
++                if archive.shape[0] > 0 and rng.rand() < 0.5:
++                    r2 = archive.shape[0] - 1 if archive.shape[0] == 1 else int(rng.randint(0, archive.shape[0]))
++                    base2 = archive[r2]
+                 else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
+-                
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
+-                
+-                # Mutation and crossover
++                    base2 = pop[r2]
++                mutant = pop[i] + F_i * (pop[pbest_idx] - pop[i]) + F_i * (pop[r1] - base2)
+                 j_rand = rng.randint(0, self.dim)
++                trial = np.copy(pop[i])
+                 for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
+-                
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
++                    if rng.random() < CR_i or j == j_rand:
++                        trial[j] = mutant[j]
++                trial = reinit_individual(trial)
++                new_pop[i] = trial
++                new_pop_params[i] = (F_i, CR_i)
+             
+-            # Evaluate trial vectors
++            # Evaluate trial vectors and JADE selection
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+                     break
+                 trial_f = evaluate_problem(problem, new_pop[i])
+                 evals += 1
+-                
+-                # Greedy selection
++
+                 if trial_f < fitness[i]:
++                    # Record successful parameters
++                    S_F.append(new_pop_params[i][0])
++                    S_CR.append(new_pop_params[i][1])
++                    # Add replaced parent to archive
++                    if archive.shape[0] < max_archive_size:
++                        archive = np.vstack([archive, pop[i].reshape(1, -1)])
++                    else:
++                        archive[int(rng.randint(0, archive.shape[0]))] = pop[i]
+                     pop[i] = new_pop[i].copy()
+                     fitness[i] = trial_f
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
++
++            # Adapt JADE memory parameters from successful F/CR
++            if len(S_F) > 0:
++                s = np.asarray(S_F, dtype=float)
++                if np.sum(s) > 1e-12:
++                    mu_F = (1.0 - c_adapt) * mu_F + c_adapt * float(np.sum(s * s) / np.sum(s))
++                else:
++                    mu_F = (1.0 - c_adapt) * mu_F + c_adapt * float(np.mean(s))
++            if len(S_CR) > 0:
++                mu_CR = (1.0 - c_adapt) * mu_CR + c_adapt * float(np.mean(S_CR))
+             
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..01ba422 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -6,6 +6,7 @@ the hook that a DQN-based controller should implement.
+ """
+ from abc import ABC, abstractmethod
+ from typing import Dict, Any
++import numpy as np
+ 
+ # Import global configuration
+ import sys
+@@ -131,10 +132,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(np.log(self.epsilon_start))
++        log_eps_end = float(np.log(self.epsilon_end))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(np.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.

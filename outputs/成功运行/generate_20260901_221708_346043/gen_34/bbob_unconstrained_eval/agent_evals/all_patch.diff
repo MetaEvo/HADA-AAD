@@ -1,0 +1,501 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..c13e5b7 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -1,9 +1,11 @@
+-"""Differential Evolution optimizer for cocoex problems.
++"""Reference JADE implementation compatible with the DEOptimizer interface.
+ 
+-This module provides a `DEOptimizer` class that is controlled by a DQN agent
+-for hyperparameter optimization. The algorithm accepts an optional `controller`
+-object implementing the ParamController interface to allow dynamic parameter
+-adjustment (F, CR).
++This file provides a COMPLETE, syntactically valid JADE optimizer that can be
++copied into ec_algorithm.py. It is provided as a reference template because
++partial edits to the existing DE loop often result in broken syntax.
++
++JADE: Adaptive Differential Evolution with Optional External Archive
++Reference: Zhang & Sanderson (2009)
+ """
+ 
+ from typing import Optional, Dict, Any, Tuple
+@@ -11,7 +13,6 @@ import numpy as np
+ import os
+ import sys
+ 
+-# Import SEED from config if available
+ _config_seed = None
+ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ from config import SEED as _config_seed
+@@ -21,163 +22,240 @@ def evaluate_problem(problem, x):
+     """Evaluate problem, handling both MetaBox (problem.func) and cocoex (problem(x)) styles."""
+     if not isinstance(x, np.ndarray):
+         x = np.asarray(x, dtype=float)
+-    
++
+     if hasattr(problem, 'func'):
+-        # MetaBox style: use problem.func(x), which REQUIRES 2D input [NP, dim]
+         if x.ndim == 1:
+             x = x.reshape(1, -1)
+         result = problem.func(x)
+         return float(np.mean(np.array(result).flatten()))
+     else:
+-        # cocoex style: problem(x)
+         return float(problem(x))
+ 
+ 
+ class DEOptimizer:
+-    """Differential Evolution optimizer with DQN controller support.
+-    
+-    The controller outputs F and CR parameters dynamically during optimization.
+-    """
+-    def __init__(self, dim: int, lower_bounds, upper_bounds, max_evals: int,
+-                 params: Optional[Dict[str, Any]] = None, controller=None, recorder=None,
+-                 swarm_size: int = None):
++    """JADE optimizer with the same interface as the original DEOptimizer."""
++
++    def __init__(self, dim, lower_bounds, upper_bounds, max_evals,
++                 params=None, controller=None, recorder=None, swarm_size=None):
+         self.dim = int(dim)
+-        if lower_bounds is not None:
+-            self.lower_bounds = np.asarray(lower_bounds, dtype=float)
+-            if self.lower_bounds.ndim == 0:
+-                self.lower_bounds = np.full(self.dim, float(self.lower_bounds))
+-        else:
+-            self.lower_bounds = -5.0 * np.ones(self.dim)
+-        
+-        if upper_bounds is not None:
+-            self.upper_bounds = np.asarray(upper_bounds, dtype=float)
+-            if self.upper_bounds.ndim == 0:
+-                self.upper_bounds = np.full(self.dim, float(self.upper_bounds))
+-        else:
+-            self.upper_bounds = 5.0 * np.ones(self.dim)
+-        
+         self.max_evals = int(max_evals)
+         self.params = dict(params) if params is not None else {}
+         self.controller = controller
+         self.recorder = recorder
+         self.stats = {}
+-        self.pop_size = swarm_size if swarm_size is not None else max(10, 5 * self.dim)
+-        self.F = float(self.params.get('F', 0.5))
++        # Default pop size 40 to match evaluator, or use swarm_size
++        self.pop_size = int(swarm_size) if swarm_size is not None else 40
++        # F and CR defaults
++        self.F = float(self.params.get('F', 0.7))
+         self.CR = float(self.params.get('CR', 0.5))
+ 
+-    def _tournament_select(self, fitness, tournsize, rng):
+-        """Tournament selection with tournsize."""
+-        selected = []
+-        for _ in range(tournsize):
+-            idx = int(rng.randint(0, len(fitness)))
+-            selected.append(idx)
+-        best_idx = selected[0]
+-        for idx in selected[1:]:
+-            if fitness[idx] < fitness[best_idx]:
+-                best_idx = idx
+-        return best_idx
+-
+-    def optimize(self, problem, x0=None, train=True, seed=None) -> Tuple[list, Dict[str, Any]]:
+-        if self.controller is not None:
+-            self.controller.reset({'dim': self.dim, 'lower': self.lower_bounds, 'upper': self.upper_bounds, 'max_evals': self.max_evals})
++        # Bounds (handle None and scalar/array inputs robustly)
++        if lower_bounds is None:
++            lb = -5.0 * np.ones(self.dim)
++        else:
++            lb = np.asarray(lower_bounds, dtype=float)
++            if lb.ndim == 0:
++                lb = np.full(self.dim, float(lb))
++        if upper_bounds is None:
++            ub = 5.0 * np.ones(self.dim)
++        else:
++            ub = np.asarray(upper_bounds, dtype=float)
++            if ub.ndim == 0:
++                ub = np.full(self.dim, float(ub))
++        self.lb = lb
++        self.ub = ub
++
++    def optimize(self, problem, x0=None, train=True, seed=None):
++        """Run JADE until max_evals is reached.
+ 
++        Returns:
++            (gbest_list, stats_dict)
++        """
++        dim = self.dim
++        lb = self.lb
++        ub = self.ub
+         pop_size = self.pop_size
+-        lb = self.lower_bounds
+-        ub = self.upper_bounds
+-        
++
++        if self.controller is not None:
++            self.controller.reset({'dim': self.dim, 'lower': self.lb, 'upper': self.ub, 'max_evals': self.max_evals})
++
+         effective_seed = seed if seed is not None else _config_seed
+         rng = np.random.RandomState(effective_seed)
+ 
+-        # Initialize population - uniform random initialization
+-        pop = rng.uniform(lb, ub, (pop_size, self.dim))
+-        
+-        # Evaluate initial population
++        # ---- Initialization ----
++        pop = rng.uniform(lb, ub, (pop_size, dim))
++        if x0 is not None:
++            x0_arr = np.asarray(x0, dtype=float).flatten()
++            if x0_arr.shape[0] == dim:
++                pop[0] = np.clip(x0_arr, lb, ub)
++
+         evals = 0
+         fitness = np.full(pop_size, np.inf)
+-        
+         for i in range(pop_size):
+             if evals >= self.max_evals:
+                 break
+             fitness[i] = evaluate_problem(problem, pop[i])
+             evals += 1
+ 
+-        # Track best
+         best_idx = int(np.argmin(fitness))
+         gbest_f = float(fitness[best_idx])
+         gbest = pop[best_idx].copy()
+-        
+         initial_gbest_f = float(gbest_f)
++        prev_gbest_f = gbest_f
++
++        # Record initial population for statistics/score computation
+         initial_population_positions = pop.copy()
+         initial_population_fitness = fitness.copy()
+ 
+-        # Main loop
++        # ---- JADE memory and archive ----
++        archive = np.empty((0, dim), dtype=float)
++        archive_capacity = max(pop_size * 2, 20)
++        mu_F = float(self.F)
++        mu_CR = float(self.CR)
++        c = 0.1
++
+         iteration = 0
+-        done = False
+-        
+-        while not done:
++
++        # Linear Population Size Reduction (LPSR) for stronger convergence
++        pop_size_start = self.pop_size
++        pop_size_min = max(5, int(0.25 * self.pop_size))
++
++        while evals < self.max_evals:
+             iteration += 1
++
++            # Shrink population size linearly as budget is consumed
++            progress = evals / max(1, self.max_evals)
++            target_pop = max(pop_size_min, int(pop_size_start * (1.0 - progress)))
++            if target_pop < pop_size:
++                sort_idx = np.argsort(fitness)[:target_pop]
++                pop = pop[sort_idx].copy()
++                fitness = fitness[sort_idx].copy()
++                pop_size = target_pop
++
++            # Controller-provided F/CR are blended into the adaptation memory
+             params = dict(self.params)
+             if self.controller is not None:
+-                obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 
++                obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f,
+                        'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
+                 step_params = self.controller.step(obs)
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+-            
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
+-            
+-            prev_gbest_f = gbest_f
+-            
+-            # Generate trial vectors
++            base_F = float(params.get('F', self.F))
++            base_CR = float(params.get('CR', self.CR))
++            base_F = min(1.0, max(0.0, 0.5 * base_F + 0.5 * mu_F))
++            base_CR = min(1.0, max(0.0, 0.5 * base_CR + 0.5 * mu_CR))
++
++            # p-best selection pool (shrinks as budget is consumed)
++            progress = evals / max(1, self.max_evals)
++            p = max(0.05, 0.2 * (1.0 - progress))
++            n_pbest = max(2, int(pop_size * p))
++            sorted_idx = np.argsort(fitness)
++
++            # Archive + population pool for x_r2
++            archive_pop = np.vstack([pop, archive]) if len(archive) > 0 else pop
++            n_arch = len(archive_pop)
++
+             new_pop = np.copy(pop)
++            S_F = []
++            S_CR = []
++
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
++                # F_i drawn from Cauchy around mu_F, truncated
++                F_i = base_F + 0.1 * rng.standard_cauchy()
++                F_i = float(np.clip(F_i, 0.1, 1.0))
++                # CR_i drawn from Normal around mu_CR, truncated
++                CR_i = base_CR + 0.1 * rng.randn()
++                CR_i = float(np.clip(CR_i, 0.0, 1.0))
++
++                # Current-to-pbest/1 mutation
++                pbest_idx = sorted_idx[rng.randint(0, n_pbest)]
++                r1 = rng.randint(0, pop_size)
++                while r1 == i:
++                    r1 = rng.randint(0, pop_size)
++                if n_arch > 1:
++                    r2 = rng.randint(0, n_arch)
++                    x_r2 = archive_pop[r2]
+                 else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
+-                
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
+-                
+-                # Mutation and crossover
+-                j_rand = rng.randint(0, self.dim)
+-                for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
+-                
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
+-            
+-            # Evaluate trial vectors
+-            for i in range(pop_size):
++                    r2 = rng.randint(0, pop_size)
++                    while r2 == i or r2 == r1:
++                        r2 = rng.randint(0, pop_size)
++                    x_r2 = pop[r2]
++
++                mutant = pop[i] + F_i * (pop[pbest_idx] - pop[i]) + F_i * (pop[r1] - x_r2)
++
++                # Boundary repair: reflect
++                for _ in range(5):
++                    below = mutant < lb
++                    above = mutant > ub
++                    if not np.any(below) and not np.any(above):
++                        break
++                    mutant = np.where(below, 2 * lb - mutant, mutant)
++                    mutant = np.where(above, 2 * ub - mutant, mutant)
++                mutant = np.clip(mutant, lb, ub)
++
++                # Binomial crossover
++                j_rand = rng.randint(0, dim)
++                mask = rng.random(dim) < CR_i
++                mask[j_rand] = True
++                trial = np.where(mask, mutant, pop[i])
++
++                # Evaluation and selection
+                 if evals >= self.max_evals:
+-                    done = True
+                     break
+-                trial_f = evaluate_problem(problem, new_pop[i])
++                trial_f = evaluate_problem(problem, trial)
+                 evals += 1
+-                
+-                # Greedy selection
++
+                 if trial_f < fitness[i]:
+-                    pop[i] = new_pop[i].copy()
++                    # Save the replaced individual to the external archive
++                    if len(archive) < archive_capacity:
++                        archive = np.vstack([archive, pop[i].reshape(1, -1)])
++                    else:
++                        ridx = rng.randint(0, archive_capacity)
++                        archive[ridx] = pop[i]
++                    new_pop[i] = trial
+                     fitness[i] = trial_f
++                    S_F.append(F_i)
++                    S_CR.append(CR_i)
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+-                        gbest = new_pop[i].copy()
+-            
+-            # Compute reward: 1 if improved, 0 otherwise
+-            improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+-            
+-            # Store transition in controller's replay buffer
++                        gbest = trial.copy()
++
++            pop = new_pop
++
++            # Update success-history memory (Lehmer mean for F, arithmetic for CR)
++            if len(S_F) > 0:
++                S_F_arr = np.array(S_F)
++                S_CR_arr = np.array(S_CR)
++                denom = np.sum(S_F_arr)
++                if denom > 0:
++                    mu_F = (1.0 - c) * mu_F + c * np.sum(S_F_arr ** 2) / denom
++                mu_CR = (1.0 - c) * mu_CR + c * np.mean(S_CR_arr)
++                mu_F = float(np.clip(mu_F, 0.1, 1.0))
++                mu_CR = float(np.clip(mu_CR, 0.0, 1.0))
++
++            # Population restart/refill for additional diversity
++            if iteration % 20 == 0 and evals < self.max_evals:
++                n_refill = max(1, int(pop_size * 0.3))
++                refill_idx = np.argsort(fitness)[-n_refill:]
++                fresh = rng.uniform(lb, ub, (n_refill, dim))
++                for k, idx in enumerate(refill_idx):
++                    if evals >= self.max_evals:
++                        break
++                    pop[idx] = fresh[k]
++                    fitness[idx] = evaluate_problem(problem, fresh[k])
++                    evals += 1
++                    if fitness[idx] < gbest_f:
++                        gbest_f = fitness[idx]
++                        gbest = fresh[k].copy()
++
++            # Controller reward / transition storage
+             if self.controller is not None and train:
+-                next_obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 
+-                           'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
+-                done = (evals >= self.max_evals)
++                improved = 1.0 if gbest_f < prev_gbest_f else 0.0
++                next_obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f,
++                            'initial_gbest_f': initial_gbest_f, 'max_evals': self.max_evals}
+                 if hasattr(self.controller, 'store_reward'):
+-                    self.controller.store_reward(improved, next_obs, done)
+-            
+-            done = (evals >= self.max_evals)
++                    self.controller.store_reward(improved, next_obs, (evals >= self.max_evals))
++            prev_gbest_f = gbest_f
+ 
+         self.stats = {
+             'gbest': gbest.tolist(),
+@@ -188,4 +266,4 @@ class DEOptimizer:
+             'initial_population_positions': initial_population_positions.tolist(),
+             'initial_population_fitness': initial_population_fitness.tolist(),
+         }
+-        return gbest.tolist(), self.stats
+\ No newline at end of file
++        return gbest.tolist(), self.stats
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..01ba422 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -6,6 +6,7 @@ the hook that a DQN-based controller should implement.
+ """
+ from abc import ABC, abstractmethod
+ from typing import Dict, Any
++import numpy as np
+ 
+ # Import global configuration
+ import sys
+@@ -131,10 +132,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(np.log(self.epsilon_start))
++        log_eps_end = float(np.log(self.epsilon_end))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(np.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 7216f67..ef2866c 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -141,14 +141,22 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ 1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes.
+ 
+-2. **ALWAYS check if the Task Agent actually used the editor tool** by looking at chat_history_task_agent.md. If the Task Agent only described changes without applying them, your prompt must be more explicit about using the editor tool.
++2. **DETECT BROKEN/INCOMPLETE EDITS (CRITICAL)**: If the diff shows signs of a partial algorithm rewrite — e.g., dangling incomplete lines like `CR`, mixed vectorized and scalar code, misplaced indentation, duplicated blocks, or code that swings between the old DE loop and a new JADE/SHADE implementation — that means the Task Agent tried to make many small str_replace edits and broke the file. **The fix is NOT to tell it to "try harder" — it is to provide a COMPLETE reference implementation and instruct it to REPLACE THE ENTIRE FILE or ENTIRE optimize() METHOD in ONE str_replace call.** A complete reference JADE implementation is provided at `/hada/metabbo/reference_jade.py`.
+ 
+-3. **If evaluations failed**, check generate.log for the exact error. Common issues:
++3. **ALWAYS check if the Task Agent actually used the editor tool** by looking at chat_history_task_agent.md. If the Task Agent only described changes without applying them, your prompt must be more explicit about using the editor tool.
++
++4. **If evaluations failed**, check generate.log for the exact error. Common issues:
+    - Task Agent introduced a method that doesn't exist
+    - Task Agent broke the DEOptimizer interface
+-   - Task Agent never modified ec_algorithm.py (most common)
++   - Task Agent made partial/broken edits causing IndentationError or NameError (most common failure mode in recent generations)
++   - Task Agent never modified ec_algorithm.py (most common early-generation failure)
++
++5. **If the diff contains a broken/incomplete algorithm rewrite**, your primary goal this round is to update task_agent.py to:
++   - Point to `/hada/metabbo/reference_jade.py` as a complete, drop-in JADE implementation
++   - Mandate **whole-file or whole-method replacement** via a single str_replace, not a chain of small edits
++   - Require `python -m py_compile` and a short smoke test BEFORE submitting
+ 
+-4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
++6. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
+ 
+ Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+ 
+diff --git a/task_agent.py b/task_agent.py
+index 91df38f..6762150 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -75,15 +75,20 @@ So your modified `ec_algorithm.py` MUST still provide:
+ ## WHAT TO IMPROVE (be aggressive - try completely different algorithms):
+ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. The baseline score is ~0.88 on BBOB. You can improve dramatically by:
+ 
++**⚠️ CRITICAL: A COMPLETE REFERENCE JADE IMPLEMENTATION IS PROVIDED AT `/hada/metabbo/reference_jade.py`**
++This file contains a complete, working, syntactically valid `DEOptimizer` class implementing JADE. If you want to use JADE, the SAFEST approach is:
++1. Read `/hada/metabbo/reference_jade.py`
++2. Use `editor` → `str_replace` on `/hada/metabbo/ec_algorithm.py` to replace the **ENTIRE content** of ec_algorithm.py with the contents of reference_jade.py (or first `view` reference_jade.py, then rewrite ec_algorithm.py with the same complete implementation)
++
+ **Try these algorithm upgrades (in order of expected impact):**
+ 1. **SHADE / L-SHADE**: Success-History based Adaptive DE - CEC competition winner, adapts F and CR per-individual
+-2. **JADE**: Adaptive DE with external archive and current-to-pbest mutation
++2. **JADE**: Adaptive DE with external archive and current-to-pbest mutation (reference implementation provided!)
+ 3. **CMA-ES**: Covariance Matrix Adaptation Evolution Strategy - state-of-the-art for continuous black-box optimization
+ 4. **Hybrid DE variants**: Add mechanisms like opposition-based learning, restart, local search, diversity maintenance
+ 5. **Improved initialization**: Latin Hypercube Sampling, Sobol sequence, or opposite-based initialization
+ 
+ **Structural changes you can make:**
+-- Replace the `DEOptimizer` internals with a completely different algorithm (SHADE, JADE, CMA-ES) while keeping the same class/method interface
++- **REPLACE THE ENTIRE `DEOptimizer` CLASS** (not just parts of the loop) with a completely different algorithm (SHADE, JADE, CMA-ES) while keeping the same class/method interface — this is much safer than making incremental edits to the existing DE loop
+ - Add an external archive for storing inferior solutions (JADE-style)
+ - Implement parameter adaptation (SHADE-style success-history memory)
+ - Add population restart when diversity drops
+@@ -97,10 +102,36 @@ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR
+ ## MANDATORY WORKFLOW - FOLLOW THESE STEPS:
+ 1. **READ the domain code**: Use editor view on `/hada/domains/{domain}/dqn_de_util.py` to understand exactly how your code is called and scored
+ 2. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py`
+-3. **READ the meta-learning code**: Use editor view on `/hada/metabbo/meta_learning.py`
+-4. **MAKE your changes**: Use editor str_replace to actually modify the code files
+-5. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
+-6. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++3. **READ the reference implementation**: Use editor view on `/hada/metabbo/reference_jade.py` (if you plan to use JADE)
++4. **READ the meta-learning code** (only if changing meta-learning): Use editor view on `/hada/metabbo/meta_learning.py`
++5. **MAKE your changes**: Use editor str_replace to actually modify the code files
++
++**⚠️⚠️ CRITICAL EDITING RULE — TO AVOID BROKEN SYNTAX, DO ONE OF THESE:**
++- **Option A (SAFEST)**: If changing the optimization algorithm, use `editor` → `str_replace` on `/hada/metabbo/ec_algorithm.py` to replace the **ENTIRE FILE** with a complete, working implementation. For JADE, copy the entire content of `/hada/metabbo/reference_jade.py`.
++- **Option B**: Replace the ENTIRE `optimize()` method (from `def optimize(...)` to `return gbest.tolist(), self.stats`) with a complete, logically indented method body — never leave dangling partial edits.
++- **Option C**: Replace the ENTIRE `__init__` method if changing constructor behavior.
++
++**NEVER make a chain of 5-10 small insertions into the middle of the DE loop.** Each small edit risks breaking indentation or leaving incomplete lines, which causes the evaluation to crash with `IndentationError` or `NameError`.
++
++6. **VERIFY syntax (MANDATORY)**: Run `python -m py_compile /hada/metabbo/ec_algorithm.py` — if this fails, FIX IT before continuing.
++7. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++8. **SMOKE TEST (MANDATORY)**: Run this exact command and make sure it prints OK:
++```bash
++cd /hada/metabbo && timeout 30 python - <<'PY'
++import numpy as np, importlib.util, time
++spec = importlib.util.spec_from_file_location('ec_mod', 'ec_algorithm.py')
++ec = importlib.util.module_from_spec(spec); spec.loader.exec_module(ec)
++class Sphere:
++    def __init__(self): self.dimension = 20; self.lower_bounds = -5.0; self.upper_bounds = 5.0
++    def __call__(self, x): return float(np.sum((np.asarray(x) - 2.0)**2))
++opt = ec.DEOptimizer(20, -5.0, 5.0, 500, params={'F':0.6,'CR':0.7})
++t0=time.time(); gb, stats = opt.optimize(Sphere(), seed=1); dt=time.time()-t0
++print('TIME', dt, 'best', stats['gbest_f'], 'evals', stats['evals'])
++assert 'gbest_f' in stats and 'initial_gbest_f' in stats, stats.keys()
++print('OK')
++PY
++```
++If this times out or fails, **do not submit** — fix the code first.
+ 
+ ## REMEMBER:
+ - The evaluation code CANNOT be modified. It expects `DEOptimizer` class with the interface above.

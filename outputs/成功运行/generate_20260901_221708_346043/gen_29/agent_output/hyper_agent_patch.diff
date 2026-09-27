@@ -1,0 +1,15 @@
+diff --git a/task_agent.py b/task_agent.py
+index 377b4d2..c6fadd1 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -139,6 +139,10 @@ archive = np.empty((0, self.dim))      # external archive of inferior solutions
+ # Make sure every function evaluation still increments `evals` and stops at `self.max_evals`.
+ ```
+ 
++### ✅ MANDATORY: GEN_28 LESSON - LPSR + VECTORIZATION ARE REQUIRED:
++Gen_28 implemented a real JADE with archive + current-to-pbest + parameter memory + restart, BUT used per-individual Python loops AND did NOT implement LPSR. It scored 0.8875 - far below the gen_11 L-SHADE score 0.93121.
++Unless you implement BOTH (1) fully vectorized NumPy mutation/crossover (NO `for i in range(pop_size)` / `for j in range(self.dim)` loops in the search loop) AND (2) Linear Population Size Reduction (LPSR - shrink `n` linearly from initial population toward `pop_min` as `evals/max_evals` increases then truncate `pop`, `fitness`, and the memory/archive consistently), your patch is likely to underperform.
++
+ ### 🚀 VECTORIZED SHADE/JADE MUTATION (REQUIRED STYLE - DO THIS, NOT per-individual Python loops):
+ Implement the per-generation trial generation with NumPy array operations, NOT with a `for i in range(n): for j in range(dim):` loop. A fast vectorized template is:
+ 

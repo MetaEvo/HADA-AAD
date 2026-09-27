@@ -1,0 +1,276 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 51063c2..508761b 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -121,11 +121,18 @@ class DEOptimizer:
+         archive = np.empty((0, self.dim))
+         archive_cap = max(1, pop_size)
+ 
++        # Reserve a fraction of the budget for a final coordinate-descent
++        # local search around the best solution. This greatly helps smooth
++        # unimodal BBOB problems (e.g. f1, sphere).
++        local_reserve = max(pop_size, int(0.3 * self.max_evals))
++        main_budget = max(pop_size, self.max_evals - local_reserve)
++        local_budget = max(0, self.max_evals - main_budget)
++
+         # Main loop
+         iteration = 0
+         done = False
+         
+-        while not done:
++        while evals < main_budget and evals < self.max_evals and not done:
+             iteration += 1
+             params = dict(self.params)
+             if self.controller is not None:
+@@ -211,7 +218,7 @@ class DEOptimizer:
+ 
+             # Evaluate trial vectors
+             for i in range(pop_size):
+-                if evals >= self.max_evals:
++                if evals >= main_budget:
+                     done = True
+                     break
+                 old_f = float(fitness[i])
+@@ -272,6 +279,41 @@ class DEOptimizer:
+             
+             done = (evals >= self.max_evals)
+ 
++        # ---- Final local search: coordinate descent around best ----
++        # Use the reserved evaluation budget to refine gbest with axis-aligned
++        # line search / shrinking steps. This is highly effective for smooth
++        # unimodal functions and does not hurt multimodal ones because it is
++        # only a small fraction of the total budget and starts from the best.
++        step = 0.1 * (ub - lb)
++        local_evals = 0
++        while local_evals < local_budget and evals < self.max_evals:
++            improved_local = False
++            # Deterministic cyclic coordinate search
++            for j in range(self.dim):
++                if local_evals >= local_budget or evals >= self.max_evals:
++                    break
++                # Try positive and negative step with shrinking
++                for direction in (1.0, -1.0):
++                    if local_evals >= local_budget or evals >= self.max_evals:
++                        break
++                    trial = gbest.copy()
++                    trial[j] = np.clip(gbest[j] + direction * step[j], lb[j], ub[j])
++                    trial_f = evaluate_problem(problem, trial)
++                    evals += 1
++                    local_evals += 1
++                    if trial_f < gbest_f:
++                        gbest_f = trial_f
++                        gbest = trial.copy()
++                        improved_local = True
++                        # Increase step slightly if moving consistently
++                        step[j] *= 1.2
++                        break
++            if not improved_local:
++                # Shrink the step size to refine precision
++                step *= 0.8
++                if np.max(step) < 1e-12:
++                    break
++
+         self.stats = {
+             'gbest': gbest.tolist(),
+             'gbest_f': float(gbest_f),
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 6ca3bfd..a7d7eeb 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -58,7 +58,12 @@ class DummyHeuristicController(ParamController):
+ 
+     def step(self, observation: Dict[str, Any]) -> Dict[str, float]:
+         self.it = observation.get('iteration', self.it + 1)
+-        t = min(1.0, float(self.it) / max(1, self.decay_iters))
++        evals = float(observation.get('evals', 0.0))
++        max_evals = float(observation.get('max_evals', max(1.0, evals)))
++        # Use normalized evaluation progress for smoother scheduling
++        t = min(1.0, evals / max(1.0, max_evals))
++        if t <= 0.0:
++            t = min(1.0, float(self.it) / max(1, self.decay_iters))
+         w = self.w_start * (1 - t) + self.w_end * t
+         # Encourage exploration early, exploitation later
+         c1 = 1.8 * (1.0 - 0.5 * t)
+@@ -103,8 +108,14 @@ class AdaptiveDEController(ParamController):
+ 
+     def step(self, observation: Dict[str, Any]) -> Dict[str, float]:
+         self.it = observation.get('iteration', self.it + 1)
+-        max_iter = max(1, int(observation.get('max_evals', 10000) / 100))
+-        t = min(1.0, float(self.it) / max_iter)
++        # Use normalized evaluation budget for smoother, budget-aware scheduling
++        evals = float(observation.get('evals', 0.0))
++        max_evals = float(observation.get('max_evals', max(1.0, evals)))
++        t = min(1.0, evals / max(1.0, max_evals))
++        if t <= 0.0:
++            # Rough estimate of iterations remaining using a typical population of 100
++            max_iter = max(1, int(max_evals / 100.0))
++            t = min(1.0, float(self.it) / max_iter)
+ 
+         # Smooth progress-based decay from exploration to exploitation
+         F = self.f_start * (1 - t) + self.f_end * t
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 4ec901c..b3a8a7f 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -122,6 +122,12 @@ The Task Agent MUST implement one of: JADE, L-SHADE, CMA-ES, or another complete
+    - **Look at existing working code in the domain folder to understand the correct calling pattern before making changes**
+    - **If you introduce a new method, you MUST define it in the same file before calling it**
+ 
++10. **VERIFY THE TASK AGENT DID NOT JUST TWEAK SHADE - CRITICAL** - Before finishing, ALWAYS inspect `all_patch.diff` in the latest generation:
++    - If the patch only changes H, M_F, M_CR, archive_cap, pbest_num, memory_index, base_F, base_CR values while keeping `current-to-pbest/1` — that means the Task Agent made a REJECTED tweak. Your next prompt MUST explicitly forbid this more strongly.
++    - **If the patch adds a new class (CMAESOptimizer, GLPSO, JADEOptimizer, etc.) or changes the mutation strategy to rand/2, best/1, current-to-rand/1, etc. — that is what we want. Reinforce this behavior.**
++    - Check `chat_history_task_agent.md` for whether the Task Agent even read the domain eval file and ec_algorithm.py before editing.
++    - Check `generate.log` for `[TRAIN] Run X failed:` or `AttributeError` or `NameError` to see if the Task Agent's code broke the interface contract.
++
+ 8. **MAKE ACTUAL CODE IMPROVEMENTS AT EVERY STEP** - MANDATORY:
+    - **Every generation MUST produce working code that can run successfully**
+    - **Before submitting changes, verify: (a) all method calls exist, (b) function signatures match their callers, (c) no syntax errors**
+diff --git a/task_agent.py b/task_agent.py
+index 3e30db2..ab9ec6c 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -16,29 +16,121 @@ def _domain_algorithm_guidance(domain: str) -> str:
+     """Return domain-specific algorithm replacement guidance."""
+     if 'bbob_unconstrained' in domain or 'bbob' in domain:
+         return """
+-### MANDATORY ALGORITHM REPLACEMENT - YOU MUST PICK ONE AND IMPLEMENT IT FULLY:
+-Your change is REJECTED if you only modify constants, initialization, restart logic, or memory sizes while keeping the existing `rand/1/bin` DE loop intact.
+-1. **L-SHADE** (best for BBOB): Keep the DE skeleton but add:
+-   - Proper current-to-pbest/1 mutation with archive (the existing code only has a partial pbest, not a correct JADE-style archive)
+-   - Linear Population Size Reduction (LPSR): shrink population size as budget is consumed
+-   - Cauchy sampling for F, Normal sampling for CR, Lehmer-mean updates to memories
+-2. **JADE**: Replace the mutation with current-to-pbest/1 (using an archive), and adapt F/CR per-individual via Cauchy/Normal sampling with Lehmer mean updates.
+-3. **CMA-ES**: Add a new `CMAESOptimizer` class (copy the DEOptimizer skeleton, replace the population generation with `mean + sigma * B @ D @ randn`) and alias `DEOptimizer = CMAESOptimizer` at the bottom of the file so the caller still works.
+-4. **DE/current-to-pbest/1 with archive** (JADE-lite): minimal but structural - it changes the actual search operator, not just a constant.
+-
+-**What counts as "changing the search operator"?**
+-- Different mutation strategy (e.g., current-to-pbest/1, best/2, current-to-rand/1 with rotation-invariant crossover)
+-- Different crossover (e.g., exponential crossover, eigenvector-based crossover, no crossover with rotation-invariant mutation)
+-- Different selection (e.g., (mu+lambda), (mu,lambda), elitist with archive)
+-- A completely new class (CMA-ES, GLPSO, etc.)
+-
+-**What does NOT count (REJECTED):**
+-- Changing F, CR, w, c1, c2, pop_size
+-- Adding LHS initialization
+-- Adding stagnation restart of worst individuals
+-- Blending controller outputs with memory values
+-- Fixing log/exp names
+-- Adding boundary handling tweaks
++### 🚨🚨🚨 CRITICAL: THE CURRENT CODE IS **ALREADY SHADE** - DO NOT TWEAK IT FURTHER 🚨🚨🚨
++
++Look at `/hada/metabbo/ec_algorithm.py`. If you see `M_F`, `M_CR`, `archive`, `current-to-pbest/1`, `k_mem`, `H =`, `memory_index` — that means **SHADE is already implemented**. The last 30+ generations of task agents have only been tweaking SHADE constants (H, pbest_p, archive_cap, F/CR sampling). This has NOT improved the score. **Further SHADE tweaks are categorically REJECTED.**
++
++### YOUR ONLY ACCEPTABLE CHANGES FOR THIS GENERATION (pick exactly one):
++
++#### OPTION A: CMA-ES (STRONGLY PREFERRED - completely different search mechanism)
++Add a new `CMAESOptimizer` class in `ec_algorithm.py`, then add `DEOptimizer = CMAESOptimizer` at the bottom of the file so the caller still works.
++Use this working skeleton:
++```python
++class CMAESOptimizer:
++    def __init__(self, dim, lower_bounds, upper_bounds, max_evals, params=None, controller=None, recorder=None, swarm_size=None):
++        self.dim = int(dim)
++        self.lower_bounds = np.asarray(lower_bounds, dtype=float)
++        self.upper_bounds = np.asarray(upper_bounds, dtype=float)
++        self.max_evals = int(max_evals)
++        self.params = dict(params) if params is not None else {}
++        self.controller = controller
++        self.recorder = recorder
++        self.stats = {}
++        self.pop_size = swarm_size if swarm_size is not None else max(10, 4 + int(3 * np.log(self.dim)))
++
++    def optimize(self, problem, x0=None, train=True, seed=None):
++        rng = np.random.RandomState(seed if seed is not None else _config_seed)
++        lb, ub = self.lower_bounds, self.upper_bounds
++        dim, pop_size, max_evals = self.dim, self.pop_size, self.max_evals
++        N = pop_size
++        mu = (ub + lb) / 2.0 if x0 is None else np.clip(np.asarray(x0, dtype=float), lb, ub)
++        sigma_init = 0.3 * (ub - lb)
++        sigma = float(np.mean(sigma_init))
++        C = np.eye(dim)
++        p_s = np.zeros(dim); p_c = np.zeros(dim)
++        B = np.eye(dim); D = np.ones(dim)
++        # CMA-ES weights
++        mu_eff = max(1.0, N / 4.0)
++        cc = 4.0 / (dim + 4.0)
++        cs = (mu_eff + 2.0) / (dim + mu_eff + 5.0)
++        c1 = 2.0 / ((dim + 1.3) ** 2 + mu_eff)
++        cmu = min(1.0 - c1, 2.0 * (mu_eff - 2.0 + 1.0/mu_eff) / ((dim + 2.0) ** 2 + mu_eff))
++        damps = 1.0 + 2.0 * max(0.0, np.sqrt((mu_eff-1.0)/(dim+1.0)) - 1.0) + cs
++        evals = 0
++        gbest_f = np.inf
++        gbest = mu.copy()
++        initial_gbest_f = np.inf
++        initial_pop = np.empty((0, dim)); initial_fit = np.empty(0)
++        iteration = 0
++        done = False
++        while not done and evals < max_evals:
++            iteration += 1
++            # Sample population
++            try:
++                eigvals, B = np.linalg.eigh(C)
++                D = np.sqrt(np.clip(eigvals, 1e-30, None))
++            except Exception:
++                B, D = np.eye(dim), np.ones(dim)
++            pop = np.array([mu + sigma * (B @ (D * rng.randn(dim))) for _ in range(N)])
++            pop = np.clip(pop, lb, ub)
++            # Evaluate
++            fitness = np.full(N, np.inf)
++            for i in range(N):
++                if evals >= max_evals: break
++                fitness[i] = evaluate_problem(problem, pop[i])
++                evals += 1
++            valid = np.isfinite(fitness)
++            if not np.any(valid): continue
++            sort_idx = np.argsort(fitness[valid])
++            # gbest tracking
++            best_local_idx = np.where(valid)[0][sort_idx[0]]
++            if fitness[best_local_idx] < gbest_f:
++                gbest_f = fitness[best_local_idx]; gbest = pop[best_local_idx].copy()
++            if iteration == 1:
++                initial_gbest_f = gbest_f
++                initial_pop = pop[valid].copy(); initial_fit = fitness[valid].copy()
++            # Selection: top mu = N//2
++            mu_n = max(1, N // 2)
++            top_idx = np.where(valid)[0][sort_idx[:mu_n]]
++            top_x = pop[top_idx]
++            weights = np.log(mu_n + 0.5) - np.log(np.arange(1, mu_n + 1))
++            weights = weights / np.sum(weights)
++            old_mu = mu.copy()
++            mu = np.sum(weights[:, None] * top_x, axis=0)
++            y = mu - old_mu
++            # Evolution path updates
++            p_s = (1 - cs) * p_s + np.sqrt(cs * (2 - cs) * mu_eff) * (mu - old_mu) / (sigma + 1e-30)
++            h_s = 1.0 if np.linalg.norm(p_s) / np.sqrt(1 - (1 - cs)**(2*(evals+1)/N)) < 1.4 + 2.0/(dim+1) else 0.0
++            p_c = (1 - cc) * p_c + h_s * np.sqrt(cc * (2 - cc) * mu_eff) * y / (sigma + 1e-30)
++            # Covariance update
++            C = (1 - c1 - cmu) * C + c1 * (np.outer(p_c, p_c) + (1 - h_s) * cc * (2 - cc) * C)
++            for k in range(mu_n):
++                xk = (top_x[k] - old_mu) / (sigma + 1e-30)
++                C = C + cmu * weights[k] * np.outer(xk, xk)
++            # Step-size update
++            sigma = sigma * np.exp((cs / damps) * (np.linalg.norm(p_s) / (np.sqrt(1 - (1-cs)**(2*(evals+1)/N)) + 1e-30) - 1.0))
++            sigma = float(np.clip(sigma, 1e-8, 10.0 * np.mean(sigma_init)))
++            if self.controller is not None:
++                obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 'initial_gbest_f': initial_gbest_f, 'max_evals': max_evals}
++                step_params = self.controller.step(obs)
++        self.stats = {'gbest': gbest.tolist(), 'gbest_f': float(gbest_f), 'evals': int(evals), 'iterations': int(iteration), 'initial_gbest_f': float(initial_gbest_f), 'initial_population_positions': initial_pop.tolist() if len(initial_pop) else pop.tolist(), 'initial_population_fitness': initial_fit.tolist() if len(initial_fit) else fitness.tolist()}
++        return gbest.tolist(), self.stats
++
++DEOptimizer = CMAESOptimizer  # <-- PUT THIS AT BOTTOM OF FILE
++```
++
++#### OPTION B: DE/rand/2/bin, DE/best/1/bin, DE/current-to-rand/1 (rotation-invariant) — change the actual mutation strategy but keep DE skeleton.
++
++#### OPTION C: A completely different optimizer (GLPSO, evolution strategy with (mu+lambda) selection, etc.) as a new class with the same interface.
++
++### HARD RULES — YOUR PATCH IS REJECTED IF:
++1. You modify SHADE parameters/constants (H, M_F, M_CR, archive_cap, pbest_num, memory_index) without changing the core mutation strategy.
++2. You keep `current-to-pbest/1` as the mutation and merely change values.
++3. You only change initialization, boundary handling, restart logic, or controller blending.
++4. You do not add a new class or change the actual search operator.
++5. You edit any file in `/hada/domains/`.
++
++**If your patch matches any of the above rejection criteria, it will score ZERO and waste an entire generation.**
+ """
+     return ""
+ 

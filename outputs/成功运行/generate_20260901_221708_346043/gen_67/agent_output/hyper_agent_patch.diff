@@ -1,0 +1,132 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index b3a8a7f..98e94ca 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -103,7 +103,7 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ - Fixing log/exp names
+ - Adding boundary handling tweaks
+ 
+-The Task Agent MUST implement one of: JADE, L-SHADE, CMA-ES, or another completely different search mechanism (e.g., current-to-pbest/1 with archive, best/2 mutation, exponential crossover, (mu+lambda) selection). Make the task_agent.py prompt explicitly require this.
++The Task Agent MUST implement one of: JADE, L-SHADE, CMA-ES, GLPSO, or another completely different search mechanism. **`current-to-pbest/1` is ALREADY implemented in the SHADE code and is NOT acceptable as a new mechanism — it must be replaced with something like rand/1, rand/2, best/1, best/2, current-to-rand/1, or a new class entirely (CMA-ES, JADE, etc.).** L-SHADE that merely adds linear population size reduction to the EXISTING SHADE loop (keeping `current-to-pbest/1`) is ALSO REJECTED — the core mutation/update rule must change. Make the task_agent.py prompt explicitly require this.
+ 
+ 5. **INCREMENTAL IMPROVEMENT STRATEGY** - VERY IMPORTANT:
+    - **Each generation should focus on ONE functional module at a time** (e.g., only change the evolutionary algorithm OR only change the meta-learning approach OR only change the population structure)
+diff --git a/task_agent.py b/task_agent.py
+index ab9ec6c..c021153 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -20,6 +20,8 @@ def _domain_algorithm_guidance(domain: str) -> str:
+ 
+ Look at `/hada/metabbo/ec_algorithm.py`. If you see `M_F`, `M_CR`, `archive`, `current-to-pbest/1`, `k_mem`, `H =`, `memory_index` — that means **SHADE is already implemented**. The last 30+ generations of task agents have only been tweaking SHADE constants (H, pbest_p, archive_cap, F/CR sampling). This has NOT improved the score. **Further SHADE tweaks are categorically REJECTED.**
+ 
++The most recent generation (gen_50) added L-SHADE-style linear population reduction AND opposition-based learning but KEPT the core `current-to-pbest/1` mutation. That is still just a wrapper around SHADE — **REJECTED**. You MUST implement a brand-new class with a genuinely different core search mechanism.
++
+ ### YOUR ONLY ACCEPTABLE CHANGES FOR THIS GENERATION (pick exactly one):
+ 
+ #### OPTION A: CMA-ES (STRONGLY PREFERRED - completely different search mechanism)
+@@ -177,77 +179,43 @@ gbest, stats = de_opt.optimize(problem, train=..., seed=seed)
+ 
+ ## HOW TO IMPLEMENT A NEW ALGORITHM (CONCRETE TEMPLATE)
+ 
+-### Option A: Replace the internals of DEOptimizer.optimize() with JADE / current-to-pbest/1
+-Replace the trial-generation loop with something like:
+-```python
+-# JADE state
+-mu_F = params.get('mu_F', 0.5)
+-mu_CR = params.get('mu_CR', 0.5)
+-archive = np.empty((0, self.dim))
+-p = params.get('p', 0.1)
+-
+-while not done:
+-    # ...
+-    sorted_idx = np.argsort(fitness)
+-    S_F, S_CR = [], []
+-    for i in range(pop_size):
+-        # current-to-pbest/1
+-        pi = sorted_idx[rng.randint(max(1, int(pop_size * p)))]
+-        x_pbest = pop[pi]
+-        r1 = rng.randint(pop_size)
+-        while r1 == i:
+-            r1 = rng.randint(pop_size)
+-        if len(archive) > 0:
+-            r2 = rng.randint(pop_size + len(archive))
+-            x_r2 = archive[r2 - pop_size] if r2 >= pop_size else pop[r2]
+-        else:
+-            r2 = rng.randint(pop_size)
+-            while r2 == i or r2 == r1:
+-                r2 = rng.randint(pop_size)
+-            x_r2 = pop[r2]
+-        F_i = mu_F + 0.1 * rng.standard_cauchy()
+-        F_i = float(np.clip(F_i, 0.1, 1.0))
+-        CR_i = float(np.clip(mu_CR + 0.1 * rng.randn(), 0.0, 1.0))
+-        # mutation + binomial crossover (keep the existing loop structure)
+-        # if the trial improves, add old x_i to archive (capped at archive_capacity)
+-        # and record F_i / CR_i in S_F / S_CR
+-    # update mu_F = sum(f**2 for f in S_F) / sum(f for f in S_F)
+-    # update mu_CR = mean(S_CR)
+-```
++The SINGLE most important rule: **the code already contains a working SHADE implementation with `current-to-pbest/1` mutation. Do NOT recreate, tweak, or wrap that exact mutation strategy.** If the evaluator sees `current-to-pbest/1`, `M_F`, `M_CR`, `archive`, `k_mem`, or `memory_index` in your patch without a genuinely different core update rule, your patch is REJECTED.
+ 
+-### Option B: Add a new class `JADEOptimizer` (copy DEOptimizer, change mutation)
+-Keep the old `DEOptimizer` or alias: add `DEOptimizer = JADEOptimizer` at the bottom of the file so the caller doesn't break. Make the new class implement JADE/current-to-pbest with archive and parameter adaptation.
++### Acceptable approaches (pick ONE):
+ 
+-### Option C: L-SHADE
+-Start from the existing SHADE code (already in the file) and add **Linear Population Size Reduction**: 
+-```python
+-# At end of each iteration, after selection:
+-N_min = max(4, int(0.25 * initial_pop_size))
+-new_pop_size = round(initial_pop_size + (N_min - initial_pop_size) * (evals / max_evals))
+-if new_pop_size < pop_size:
+-    keep_idx = np.argsort(fitness)[:new_pop_size]
+-    pop = pop[keep_idx]; fitness = fitness[keep_idx]; pop_old = pop_old[keep_idx]
+-    pop_size = new_pop_size
+-```
+-Also fix the existing SHADE to use a proper archive (it currently grows unbounded but should be capped and used in mutation).
+-
+-### Option D: CMA-ES
+-Implement a simplified CMA-ES as a new class:
++#### Approach 1: Add a NEW CLASS implementing a fundamentally different optimizer
++Add a new class (e.g., `CMAESOptimizer`, `GLPSO`, `GAOptimizer`, `ESOptimizer`) with the same `__init__` and `optimize` signature as `DEOptimizer`, then alias `DEOptimizer = YourNewClass` at the bottom so the caller still works. A minimal skeleton:
+ ```python
+ class CMAESOptimizer:
+-    # same __init__ signature as DEOptimizer
++    def __init__(self, dim, lower_bounds, upper_bounds, max_evals, params=None, controller=None, recorder=None, swarm_size=None):
++        # same signature as DEOptimizer
++        self.dim = int(dim)
++        self.lower_bounds = np.asarray(lower_bounds, dtype=float)
++        self.upper_bounds = np.asarray(upper_bounds, dtype=float)
++        self.max_evals = int(max_evals)
++        self.params = dict(params) if params is not None else {}
++        self.controller = controller
++        self.recorder = recorder
++        self.stats = {}
++
+     def optimize(self, problem, x0=None, train=True, seed=None):
+-        # state: mean, sigma, C=I, p_c, p_s
+-        # each iteration:
+-        #   eigendecompose C -> B, D
+-        #   pop = mean + sigma * (B @ D @ randn(dim)).T  (pop_size samples)
+-        #   evaluate, sort by fitness, update mean via weighted sum of top mu
+-        #   update p_c, p_s, C via standard CMA-ES equations
+-        #   return gbest, stats dict with the same keys
++        # ... implement your optimizer here ...
++        # return (gbest.tolist(), self.stats)
++        # self.stats must contain gbest_f, initial_gbest_f, evals, iterations
++        ...
+ 
+ DEOptimizer = CMAESOptimizer  # alias at bottom so dqn_de_util.py still works
+ ```
+ 
++#### Approach 2: Change the mutation/crossover operator inside DEOptimizer (ONLY if you keep the DE skeleton)
++If you keep the existing DE/DE-family skeleton, you MUST change the actual mutation from `current-to-pbest/1` to a genuinely different operator:
++- `rand/1`:  `v = x_r1 + F * (x_r2 - x_r3)`
++- `rand/2`:  `v = x_r1 + F * (x_r2 - x_r3) + F * (x_r4 - x_r5)`
++- `best/1`:  `v = x_best + F * (x_r1 - x_r2)`
++- `best/2`:  `v = x_best + F * (x_r1 - x_r2) + F * (x_r3 - x_r4)`
++- `current-to-rand/1` (rotation-invariant): `v = x_i + F * (x_r1 - x_i) + F * (x_r2 - x_r3)` — note: no binomial crossover needed with this operator, use the trial directly.
++Also change the crossover/selection if you can (exponential crossover, (mu+lambda) selection, etc.).
++
+ ## WHAT NOT TO DO (YOUR CHANGE WILL BE REJECTED IF YOU ONLY DO THESE)
+ - ❌ Don't just change F, CR, w, c1, c2, pop_size values
+ - ❌ Don't just add LHS initialization (already done in previous generations)

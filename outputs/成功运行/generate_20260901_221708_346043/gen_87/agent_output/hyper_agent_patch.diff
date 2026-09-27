@@ -1,0 +1,68 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 9340780..4c7ade1 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -66,10 +66,19 @@ CRITICAL REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
+    - /hada/hyper_agent.py (improve your own prompt/logic)
+ 
+ 4. **REQUIRED STEP-BY-STEP PROCESS**:
+-   Step 1: Use editor view command to see the current code/logs
+-   Step 2: Use editor str_replace command to make improvements (YOU MUST DO THIS)
+-   Step 3: Verify your changes were applied
+-   Step 4: Respond with JSON
++   Step 0: Read the latest generation's all_patch.diff and chat_history_task_agent.md to diagnose what went wrong
++   Step 1: Use editor view command to see the current code/logs (task_agent.py, hyper_agent.py, latest diff)
++   Step 2: Use editor str_replace command to make ACTUAL CODE CHANGES to /hada/task_agent.py (and/or /hada/hyper_agent.py). You MUST use str_replace - not just describe changes.
++   Step 3: Verify your changes were applied (view the edited file again)
++   Step 4: Run syntax verification: `python -c "import ast; ast.parse(open('/hada/task_agent.py').read()); ast.parse(open('/hada/hyper_agent.py').read()); print('SYNTAX OK')"`
++   Step 5: Respond with JSON
++
++## MANDATORY VERIFICATION BEFORE FINISHING:
++- [ ] You used `editor` with `str_replace` and made an actual code change
++- [ ] The change is substantial and targeted (not just rephrasing)
++- [ ] The change makes the Task Agent MORE likely to rewrite `ec_algorithm.py` with a NEW algorithm (L-SHADE, JADE, CMA-ES, etc.) rather than tweak parameters
++- [ ] The change includes concrete algorithm guidance and verification steps
++- [ ] You verified the edited file(s) parse as valid Python
+ 
+ ## YOUR PRIMARY JOB AS META AGENT:
+ 
+diff --git a/task_agent.py b/task_agent.py
+index bbfacca..a145ed1 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -65,6 +65,35 @@ The gen_11 L-SHADE included these critical components:
+ 
+ **Therefore you must essentially REWRITE the `optimize()` method to implement the full L-SHADE algorithm. This is a MAJOR structural change - not a small tweak. DO NOT just tweak parameters.**
+ 
++## 🎯 DOMAIN-SPECIFIC ALGORITHM DIRECTIONS (READ THIS - DO NOT ONLY DO L-SHADE)
++
++The instructions above focus on L-SHADE for `bbob_unconstrained` because it is the PROVEN winner (0.93121). However, for OTHER domains or if you want to explore beyond L-SHADE, choose the best algorithm for THAT domain:
++
++| Domain | Best Algorithm Families | Key Components to Implement |
++|---|---|---|
++| `bbob_unconstrained` | **SHADE, L-SHADE, JADE, CMA-ES** | SHADE memory, current-to-pbest/1, archive, LPSR, stagnation restart, weighted Lehmer mean |
++| `bbob_constrained` | **C-DE, SHADE with constraint handling, CMA-ES with repair** | Feasibility rules (Deb's), constraint domination, epsilon-constraint, repair operators |
++| `metabox_mt` | **MFEA, MFEA-II, MFEA-DE, MFDE** | Multi-factorial inheritance, skill factor, assortative mating, vertical cultural transmission, scalar fitness |
++| `metabox_mo` | **NSGA-II, NSGA-III, MOEA/D, SPEA2, SMPSO** | Non-dominated sorting, crowding distance, reference points (NSGA-III), weight vectors (MOEA/D), hypervolume indicator (SMS-EMOA) |
++
++**WHATEVER ALGORITHM YOU CHOOSE, YOU MUST ACTUALLY IMPLEMENT THE STRUCTURAL COMPONENTS LISTED ABOVE - NOT JUST CHANGE NUMERIC PARAMETERS.** For example, if you choose CMA-ES, you must implement the full covariance matrix adaptation, not just tweak sigma.
++
++Also, consider changing the **meta-learning controller** (not just the EA):
++- Current: DQN
++- Try: PPO, A2C, Bayesian Optimization, L2O, or a simple adaptive parameter controller
++- The controller interface is in `param_controller.py` and `meta_learning.py`
++
++## 🛠 MANDATORY TOOL USE AND VERIFICATION CHECKLIST
++
++1. **YOU MUST USE `editor` TOOL WITH `str_replace`**: The ONLY acceptable way to make code changes is the `editor` tool with command='str_replace'. Do NOT just describe changes in your response - actually apply them.
++2. **AFTER EDITING, YOU MUST VERIFY**:
++   - Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
++   - Run `python -c "import sys; sys.path.insert(0,'/hada'); import ast; tree=ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); names=[n.name for n in ast.walk(tree) if isinstance(n, (ast.ClassDef, ast.FunctionDef))]; assert 'DEOptimizer' in names, 'DEOptimizer missing'; print('INTERFACE OK')"`
++   - Confirm `optimize()` returns a dict with `'gbest_f'` and `'initial_gbest_f'` keys
++3. **IF YOU INTRODUCE A NEW METHOD/CLASS, DEFINE IT BEFORE USING IT.**
++4. **DO NOT BREAK EXISTING CALLS**: `evaluate_problem(problem, x)` must remain callable as a module-level function or as a defined method.
++5. **EVERY GENERATION MUST HAVE AN ACTUAL CODE CHANGE** - no empty modifications.
++
+ ## FILES YOU ARE ALLOWED TO MODIFY:
+ 1. `/hada/metabbo/ec_algorithm.py` - The main evolutionary algorithm (MOST IMPORTANT)
+ 2. `/hada/metabbo/meta_learning.py` - Meta-learning controller (DQN, PPO, etc.)

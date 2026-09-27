@@ -1,0 +1,226 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 6b87a29..168c741 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -115,12 +115,17 @@ class DEOptimizer:
+         done = False
+         
+         # SHADE (Success-History Adaptive Differential Evolution) state
+-        memory_size = 5
++        memory_size = 10
+         memory_F = np.full(memory_size, 0.5)
+         memory_CR = np.full(memory_size, 0.5)
+         memory_idx = 0
+         archive = np.empty((0, self.dim))
+-        archive_capacity = max(pop_size, 20)
++        archive_capacity = max(pop_size, 40)
++        # L-SHADE style linear population size reduction
++        pop_initial_size = int(pop_size)
++        pop_curr = int(pop_size)
++        min_pop_size = max(4, int(0.25 * pop_size))
++        stagnation_count = 0
+         
+         while not done:
+             iteration += 1
+@@ -137,6 +142,15 @@ class DEOptimizer:
+             ctrl_CR = float(params.get('CR', self.CR))
+             
+             progress = min(1.0, evals / max(1.0, self.max_evals))
++            
++            # L-SHADE linear population size reduction
++            new_pop_curr = int(max(min_pop_size, round(pop_initial_size * (1.0 - progress))))
++            if new_pop_curr < pop_curr:
++                keep_idx = np.argsort(fitness)[:new_pop_curr]
++                pop = pop[keep_idx].copy()
++                fitness = fitness[keep_idx]
++                pop_curr = new_pop_curr
++            
+             # More exploitation as the budget is consumed
+             pbest_p = max(0.05, 0.2 * (1.0 - progress))
+             
+@@ -145,15 +159,15 @@ class DEOptimizer:
+             new_pop = np.copy(pop)
+             S_F = []
+             S_CR = []
+-            F_i_values = np.zeros(pop_size)
+-            CR_i_values = np.zeros(pop_size)
++            F_i_values = np.zeros(pop_curr)
++            CR_i_values = np.zeros(pop_curr)
+             
+             sorted_idx = np.argsort(fitness)
+-            pbest_num = max(1, int(pop_size * pbest_p))
++            pbest_num = max(1, int(pop_curr * pbest_p))
+             pbest_indices = sorted_idx[:pbest_num]
+             
+             # Generate trial vectors using SHADE current-to-pbest/1
+-            for i in range(pop_size):
++            for i in range(pop_curr):
+                 # Sample F_i from Cauchy distribution based on history memory
+                 mi = int(rng.randint(memory_size))
+                 mu_F = float(memory_F[mi])
+@@ -165,6 +179,12 @@ class DEOptimizer:
+                     F_i = 1.0
+                 CR_i = float(rng.normal(mu_CR, 0.1))
+                 CR_i = max(0.0, min(1.0, CR_i))
++                # Blend controller output into the adaptive parameters for more control
++                if self.controller is not None:
++                    F_i = 0.7 * F_i + 0.3 * ctrl_F
++                    CR_i = 0.7 * CR_i + 0.3 * ctrl_CR
++                    F_i = max(0.05, min(1.0, F_i))
++                    CR_i = max(0.0, min(1.0, CR_i))
+                 F_i_values[i] = F_i
+                 CR_i_values[i] = CR_i
+                 
+@@ -176,19 +196,19 @@ class DEOptimizer:
+                 base = pop[i] + F_i * (pbest_x - pop[i])
+                 
+                 # r1 from population, r2 from population or archive
+-                r1 = int(rng.randint(pop_size))
++                r1 = int(rng.randint(pop_curr))
+                 while r1 == i:
+-                    r1 = int(rng.randint(pop_size))
+-                candidate_r2 = [idx for idx in range(pop_size) if idx != i and idx != r1]
++                    r1 = int(rng.randint(pop_curr))
++                candidate_r2 = [idx for idx in range(pop_curr) if idx != i and idx != r1]
+                 if len(archive) > 0:
+-                    candidate_r2 += [pop_size + j for j in range(len(archive))]
++                    candidate_r2 += [pop_curr + j for j in range(len(archive))]
+                 if len(candidate_r2) < 1:
+-                    r2 = int(rng.randint(pop_size))
++                    r2 = int(rng.randint(pop_curr))
+                     x2 = pop[r2]
+                 else:
+                     r2 = int(candidate_r2[int(rng.randint(len(candidate_r2)))])
+-                    if r2 >= pop_size:
+-                        x2 = archive[r2 - pop_size]
++                    if r2 >= pop_curr:
++                        x2 = archive[r2 - pop_curr]
+                     else:
+                         x2 = pop[r2]
+                 
+@@ -203,7 +223,7 @@ class DEOptimizer:
+                 new_pop[i] = trial
+             
+             # Evaluate trial vectors and apply greedy selection
+-            for i in range(pop_size):
++            for i in range(pop_curr):
+                 if evals >= self.max_evals:
+                     done = True
+                     break
+@@ -233,6 +253,23 @@ class DEOptimizer:
+                 memory_CR[memory_idx] = float(np.mean(S_CR))
+                 memory_idx = (memory_idx + 1) % memory_size
+             
++            # Stagnation detection and diversity recovery
++            if gbest_f < prev_gbest_f - 1e-12:
++                stagnation_count = 0
++            else:
++                stagnation_count += 1
++                if stagnation_count >= 6:
++                    n_reinit = max(1, pop_curr // 2)
++                    sorted_idx_restart = np.argsort(fitness)
++                    worst_idx = sorted_idx_restart[-n_reinit:]
++                    for idx in worst_idx:
++                        noise = 0.05 * (ub - lb) * rng.standard_normal(self.dim)
++                        pop[idx] = np.clip(gbest + noise, lb, ub)
++                        if evals < self.max_evals:
++                            fitness[idx] = evaluate_problem(problem, pop[idx])
++                            evals += 1
++                    stagnation_count = 0
++            
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index dbe1b92..2b53716 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -6,6 +6,7 @@ the hook that a DQN-based controller should implement.
+ """
+ from abc import ABC, abstractmethod
+ from typing import Dict, Any
++import math
+ import numpy as np
+ 
+ # Import global configuration
+@@ -132,10 +133,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(math.log(max(self.epsilon_start, 1e-12)))
++        log_eps_end = float(math.log(max(self.epsilon_end, 1e-12)))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(math.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 9340780..6b79f93 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -150,6 +150,14 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ 4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py".
+ 
++## 🔥 LATEST LESSONS FROM GEN_74 (bbob_unconstrained, score 0.8846):
++- **LHS initialization HURT**: gen_74 added Latin hypercube sampling and scored 0.8846, below the best 0.93121 (gen_11 L-SHADE with uniform init). Your task_agent.py prompt MUST explicitly reject LHS/quasi-random initialization.
++- **New controller classes without wiring are useless**: gen_74 added `LSHADEHeuristicController` to param_controller.py but never trained it or wired it into `meta_learning.py`. Adding dead code wastes evaluation budget. The task_agent.py prompt MUST say: "DO NOT add new controller classes unless you also modify meta_learning.py to train them."
++- **Per-individual Python loops cause timeouts**: gen_62 scored only 0.8549 because it wrote per-individual loops instead of vectorized NumPy. This is the #1 recurring failure. The task_agent.py prompt MUST include a mandatory static check that greps for `for i in range(pop_size)` and `for j in range(self.dim)`.
++- **Always check the latest generation's diff**: Look at `{eval_path}/gen_N/<domain>_eval/agent_evals/all_patch.diff` before modifying task_agent.py. If the diff only tweaks F/CR/pop_size values, that's a FAILURE.
++
++
++
+ ## 🔥 CRITICAL: REFERENCE THE BEST-KNOWN WINNING IMPLEMENTATION
+ For bbob_unconstrained, the **gen_11 L-SHADE achieved best score 0.93121**. Include this winning diff path in task_agent.py prompt:
+ `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff`
+diff --git a/task_agent.py b/task_agent.py
+index 88e7e8f..5fac82d 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -194,6 +194,43 @@ Use `current_n` throughout the loop (initialized to `pop_size`) instead of hardc
+ - Your changes must be syntactically valid Python.
+ - **The gen_11 L-SHADE achieved 0.93121. Your goal is to add back the missing L-SHADE components (LPSR, restart, weighted Lehmer mean) to the current JADE implementation to recover and exceed that score.**
+ 
++## MANDATORY STATIC CHECKS (RUN BEFORE SUBMITTING)
++
++**Gen_62 ignored the vectorized template and wrote per-individual Python loops again, scoring only 0.8549 (down from gen_50's 0.9289). This is the #1 recurring failure.**
++
++Before you submit, you MUST run these checks via bash and confirm all pass:
++
++```bash
++cd /hada/metabbo && echo '--- Checking for forbidden per-individual loops ---' && grep -n 'for i in range(pop_size)' ec_algorithm.py || echo 'OK: no forbidden loop'; grep -n 'for j in range(self.dim)' ec_algorithm.py || echo 'OK: no forbidden loop'; echo '--- Checking LPSR is present ---' && grep -n 'pop_min\|new_pop_size\|LPSR\|Linear Population' ec_algorithm.py || echo 'WARNING: LPSR NOT FOUND - SHADE/JADE without LPSR is REJECTED'; echo '--- Checking class/alias ---' && grep -n 'class DEOptimizer\|DEOptimizer =' ec_algorithm.py
++```
++
++If the grep finds `for i in range(pop_size)` or `for j in range(self.dim)` anywhere in the search loop, **STOP and rewrite using the vectorized NumPy pattern below**. Do not submit code that contains these loops.
++
++If you implement any JADE/SHADE-style algorithm and `LPSR`/`new_pop_size`/`pop_min` is not present, **STOP and add Linear Population Size Reduction** — SHADE/JADE without LPSR is a known non-improvement (gen_29=0.8875, gen_62=0.8549).
++
++## VECTORIZED IMPLEMENTATION PATTERN (USE THIS TO AVOID TIMEOUTS)
++
++If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate all mutant vectors as a NumPy array:
++
++```python
++# Example: vectorized current-to-pbest/1 mutation
++# pbest_idx: array of indices of pbest individuals for each i
++# r1, r2: arrays of random distinct indices
++# F_i: array of F values per individual
++# pop: current population array (n x d)
++mutants = pop[pbest_idx] + F_i[:, None] * (pop[r1] - pop[r2] + pop[archive_idx] - pop[r1])
++```
++
++Use fully vectorized NumPy operations for mutation, crossover, and selection. This is mandatory for performance - per-individual Python loops time out (gen_62 scored 0.8549 and timed out on many instances).
++
++## STRICT REJECTION LIST (UPDATED):
++- ❌ **DO NOT add LHS or quasi-random initialization** — gen_74 added LHS and scored 0.8846, below best 0.93121. Uniform random init is sufficient.
++- ❌ **DO NOT add new controller classes unless you are also modifying meta_learning.py to train them** — gen_74 added LSHADEHeuristicController but did not wire it into training, wasting effort.
++- ❌ **DO NOT make parameter tweaks to existing F/CR/pop_size values** — these are non-improvements.
++- ❌ **DO NOT modify the `optimize()` signature or return contract.**
++- ❌ **DO NOT modify any file under /hada/domains/**
++
++
+ Now here is the specific task input:
+ """
+         

@@ -1,0 +1,202 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..51063c2 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -110,6 +110,17 @@ class DEOptimizer:
+         initial_population_positions = pop.copy()
+         initial_population_fitness = fitness.copy()
+ 
++        # ---- SHADE (Success-History based Adaptive DE) ----
++        # Memory of successful F and CR values
++        H = 6
++        MF = np.full(H, 0.5)
++        MCR = np.full(H, 0.5)
++        k_mem = 0
++
++        # External archive of replaced individuals
++        archive = np.empty((0, self.dim))
++        archive_cap = max(1, pop_size)
++
+         # Main loop
+         iteration = 0
+         done = False
+@@ -124,48 +135,130 @@ class DEOptimizer:
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+             
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
++            base_F = float(params.get('F', self.F))
++            base_CR = float(params.get('CR', self.CR))
+             
+             prev_gbest_f = gbest_f
+-            
+-            # Generate trial vectors
++
++            # Sort indices by fitness to support pbest selection
++            sorted_idx = np.argsort(fitness)
++            pbest_num = max(1, int(0.2 * pop_size))
++
++            # Per-individual parameters and success records
++            F_vals = np.zeros(pop_size)
++            CR_vals = np.zeros(pop_size)
++            S_F = []
++            S_CR = []
++            S_delta = []
++
++            # Generate trial vectors using current-to-pbest/1 with archive
+             new_pop = np.copy(pop)
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
++                # Sample F and CR from SHADE memory distributions
++                mi = int(rng.randint(H))
++                F = float(np.clip(rng.standard_cauchy() * 0.1 + MF[mi], 0.0, 1.0))
++                if not np.isfinite(F) or F <= 0.0:
++                    F = base_F
++                F_vals[i] = float(np.clip(F, 0.05, 1.0))
++
++                CR = float(np.clip(rng.normal(MCR[mi], 0.1), 0.0, 1.0))
++                if not np.isfinite(CR):
++                    CR = base_CR
++                CR_vals[i] = float(np.clip(CR, 0.0, 1.0))
++
++                # Choose pbest (best 20% individuals)
++                pi = sorted_idx[rng.randint(pbest_num)]
++
++                # Choose r1 from population excluding current i
+                 candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
++                if len(candidates) < 1:
++                    continue
++                r1 = int(rng.choice(candidates))
++
++                # Choose r2 from archive (with probability) or from population
++                use_archive = len(archive) > 0 and rng.rand() < 0.5
++                if use_archive:
++                    idx2 = int(rng.randint(len(archive)))
++                    x_r2 = archive[idx2]
+                 else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
+-                
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
+-                
+-                # Mutation and crossover
+-                j_rand = rng.randint(0, self.dim)
++                    # ensure r2 distinct from i and r1 when selecting from population
++                    candidates2 = [idx for idx in range(pop_size) if idx != i and idx != r1]
++                    if len(candidates2) < 1:
++                        continue
++                    r2 = int(rng.choice(candidates2))
++                    x_r2 = pop[r2]
++
++                xi = pop[i]
++                x_pbest = pop[pi]
++                x_r1 = pop[r1]
++
++                # current-to-pbest/1 with optional archive
++                v = xi + F_vals[i] * (x_pbest - xi) + F_vals[i] * (x_r1 - x_r2)
++
++                # Binomial crossover
++                u = np.copy(xi)
++                j_rand = rng.randint(self.dim)
+                 for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
+-                
+-                # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
+-            
++                    if rng.rand() < CR_vals[i] or j == j_rand:
++                        u[j] = v[j]
++
++                # Boundary handling: random reinitialization (better than clipping for multimodal problems)
++                for j in range(self.dim):
++                    if u[j] < lb[j] or u[j] > ub[j]:
++                        u[j] = lb[j] + rng.rand() * (ub[j] - lb[j])
++
++                new_pop[i] = u
++
+             # Evaluate trial vectors
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+                     break
++                old_f = float(fitness[i])
+                 trial_f = evaluate_problem(problem, new_pop[i])
+                 evals += 1
+                 
+-                # Greedy selection
+-                if trial_f < fitness[i]:
++                # Greedy selection with archive update
++                if trial_f < old_f:
++                    # Add replaced individual to archive
++                    if len(archive) < archive_cap:
++                        archive = np.vstack([archive, pop[i]])
++                    else:
++                        ar = rng.randint(archive_cap)
++                        archive[ar] = pop[i]
++
+                     pop[i] = new_pop[i].copy()
+                     fitness[i] = trial_f
++
++                    # Record successful parameters for memory update
++                    S_F.append(F_vals[i])
++                    S_CR.append(CR_vals[i])
++                    S_delta.append(max(1e-30, abs(old_f - trial_f)))
++
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+-            
++
++            # Update SHADE success-history memories
++            if len(S_F) > 0:
++                s_f = np.asarray(S_F)
++                s_cr = np.asarray(S_CR)
++                w = np.asarray(S_delta, dtype=float)
++                w = w / np.sum(w)
++
++                # Weighted Lehmer mean for F
++                num = float(np.sum(w * s_f * s_f))
++                den = float(np.sum(w * s_f))
++                if den > 1e-12:
++                    MF[k_mem] = num / den
++                else:
++                    MF[k_mem] = 0.5
++
++                # Weighted arithmetic mean for CR
++                MCR[k_mem] = float(np.sum(w * s_cr))
++
++                k_mem = (k_mem + 1) % H
++
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 3da5011..6ca3bfd 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -21,6 +21,8 @@ except Exception:
+     def set_global_seed(*args, **kwargs):
+         pass
+ 
++import numpy as np
++
+ 
+ class ParamController(ABC):
+     @abstractmethod
+@@ -131,10 +133,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(np.log(self.epsilon_start))
++        log_eps_end = float(np.log(self.epsilon_end))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(np.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.

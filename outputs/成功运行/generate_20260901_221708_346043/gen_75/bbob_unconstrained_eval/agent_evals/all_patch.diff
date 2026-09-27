@@ -1,0 +1,184 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 5642118..7ce5cc4 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -65,6 +65,13 @@ class DEOptimizer:
+         self.F = float(self.params.get('F', 0.5))
+         self.CR = float(self.params.get('CR', 0.5))
+ 
++        # JADE-specific parameters
++        self.mu_F = float(self.params.get('mu_F', self.F))
++        self.mu_CR = float(self.params.get('mu_CR', self.CR))
++        self.c = float(self.params.get('c', 0.1))          # memory update rate
++        self.p_best = float(self.params.get('p_best', 0.1))  # top p% for current-to-pbest
++        self.archive_size = int(self.params.get('archive_size', self.pop_size))
++
+     def _tournament_select(self, fitness, tournsize, rng):
+         """Tournament selection with tournsize."""
+         selected = []
+@@ -110,6 +117,9 @@ class DEOptimizer:
+         initial_population_positions = pop.copy()
+         initial_population_fitness = fitness.copy()
+ 
++        # JADE archive of inferior solutions (for mutation diversity)
++        archive = []
++
+         # Main loop
+         iteration = 0
+         done = False
+@@ -124,47 +134,101 @@ class DEOptimizer:
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+             
+-            F = float(params.get('F', self.F))
+-            CR = float(params.get('CR', self.CR))
++            F = float(params.get('F', self.mu_F))
++            CR = float(params.get('CR', self.mu_CR))
++            # Controller-provided F/CR become the current JADE means
++            self.mu_F = F
++            self.mu_CR = CR
+             
+             prev_gbest_f = gbest_f
+             
+-            # Generate trial vectors
++            # Generate trial vectors using JADE current-to-pbest/1
+             new_pop = np.copy(pop)
++            F_vals = np.zeros(pop_size)
++            CR_vals = np.zeros(pop_size)
++            pbest_count = max(1, int(self.p_best * pop_size))
++            archive_len = len(archive)
++
+             for i in range(pop_size):
+-                # Tournament selection (tournsize=3, does NOT exclude current individual)
+-                candidates = [idx for idx in range(pop_size) if idx != i]
+-                if len(candidates) < 3:
+-                    indices = list(range(pop_size))
++                # Sample F_i from Cauchy(mu_F, 0.1), truncated to (0, 1]
++                F_i = self.mu_F + 0.1 * rng.standard_cauchy()
++                while F_i <= 0.0:
++                    F_i = self.mu_F + 0.1 * rng.standard_cauchy()
++                F_i = min(F_i, 1.0)
++                F_vals[i] = F_i
++
++                # Sample CR_i from Normal(mu_CR, 0.1), clipped to [0, 1]
++                CR_i = self.mu_CR + 0.1 * rng.randn()
++                CR_i = min(1.0, max(0.0, CR_i))
++                CR_vals[i] = CR_i
++
++                # Choose pbest from the top p_best fraction (excluding i)
++                sorted_idx = np.argsort(fitness)
++                pbest_candidates = [idx for idx in sorted_idx[:pbest_count] if idx != i]
++                if not pbest_candidates:
++                    pbest_candidates = [i]
++                pbest_idx = int(pbest_candidates[rng.randint(0, len(pbest_candidates))])
++
++                # Choose r1 (must differ from i)
++                r1 = rng.randint(0, pop_size)
++                while r1 == i:
++                    r1 = rng.randint(0, pop_size)
++
++                # Choose r2 from population or archive (must differ from i and r1)
++                use_archive = (archive_len > 0 and rng.random() < 0.5)
++                if use_archive:
++                    r2 = archive[rng.randint(0, archive_len)]
+                 else:
+-                    indices = rng.choice(candidates, size=3, replace=False)
+-                
+-                a, b, c = pop[indices[0]], pop[indices[1]], pop[indices[2]]
+-                
+-                # Mutation and crossover
++                    r2_idx = rng.randint(0, pop_size)
++                    while r2_idx == i or r2_idx == r1:
++                        r2_idx = rng.randint(0, pop_size)
++                    r2 = pop[r2_idx]
++
++                # JADE current-to-pbest/1 mutation
++                v = pop[i] + F_i * (pop[pbest_idx] - pop[i]) + F_i * (pop[r1] - r2)
++
++                # Binomial crossover
+                 j_rand = rng.randint(0, self.dim)
++                trial = pop[i].copy()
+                 for j in range(self.dim):
+-                    if rng.random() < CR or j == j_rand:
+-                        new_pop[i, j] = a[j] + F * (b[j] - c[j])
+-                
++                    if rng.random() < CR_i or j == j_rand:
++                        trial[j] = v[j]
++
+                 # Boundary handling: clip
+-                new_pop[i] = np.clip(new_pop[i], lb, ub)
+-            
+-            # Evaluate trial vectors
++                new_pop[i] = np.clip(trial, lb, ub)
++
++            # Evaluate trial vectors, apply selection, update JADE archive/memory
++            S_F = []
++            S_CR = []
+             for i in range(pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+                     break
+                 trial_f = evaluate_problem(problem, new_pop[i])
+                 evals += 1
+-                
++
+                 # Greedy selection
+                 if trial_f < fitness[i]:
++                    old_x = pop[i].copy()
+                     pop[i] = new_pop[i].copy()
+                     fitness[i] = trial_f
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
++                    # Add the replaced (inferior) solution to the archive
++                    if len(archive) < self.archive_size:
++                        archive.append(old_x)
++                    else:
++                        archive[rng.randint(0, len(archive))] = old_x
++                    S_F.append(F_vals[i])
++                    S_CR.append(CR_vals[i])
++
++            # Adaptive parameter memory update (Lehmer mean for F)
++            if len(S_F) > 0:
++                F_arr = np.array(S_F)
++                mean_F = float(np.sum(F_arr * F_arr) / np.sum(F_arr))
++                self.mu_F = (1.0 - self.c) * self.mu_F + self.c * mean_F
++                self.mu_CR = (1.0 - self.c) * self.mu_CR + self.c * float(np.mean(S_CR))
+             
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+diff --git a/hyper_agent.py b/hyper_agent.py
+index abb80da..6c37ec5 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -149,6 +149,8 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ ## ANALYSIS GUIDANCE (what to look at before making changes):
+ 
++0. **🚨 VECTORIZATION CHECK FIRST (CRITICAL):** If the diff contains `for i in range(pop_size)`, `for i in range(active_pop_size)`, or `for j in range(self.dim)` in mutation/crossover, that is the #1 recurring failure (gen_62=0.8549, gen_74=0.8846). Your task_agent.py prompt MUST warn about this BEFORE any algorithm guide.
++
+ 1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values, changing memory_size/memory_CR/archive_capacity numeric literals, or adding unused variables like `local_search_interval = 7` without implementing the actual loop), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes. **Specifically check whether new variables introduced in the diff are actually USED in the code. Unused variables are a red flag for fake structural changes.**
+ 
+ 2. **ALWAYS check if the Task Agent actually used the editor tool** by looking at chat_history_task_agent.md. If the Task Agent only described changes without applying them, your prompt must be more explicit about using the editor tool.
+diff --git a/task_agent.py b/task_agent.py
+index 8e1db9e..a92affc 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -101,6 +101,8 @@ You can improve dramatically by:
+ - Add local search / hill-climbing as a final refinement
+ - Change population sizing, mutation strategies, crossover schemes
+ 
++### 🚨 GEN_74 FAILED: NO PER-INDIVIDUAL LOOPS (0.8846 vs 0.9289). ONLY eval/selection loop allowed.
++
+ ### 🏆 CONCRETE SHADE IMPLEMENTATION GUIDE (use this as a template - DO NOT just tweak F and CR):
+ If implementing **SHADE** (Success-History based Adaptive DE), here is the core algorithm structure to add inside `DEOptimizer.optimize()`:
+ 
+@@ -220,6 +222,8 @@ Your patch MUST add new executable code paths, not just change existing literals
+ ## ⚠️ PERFORMANCE AND TIMEOUT WARNING (CRITICAL - A TIMEOUT SCORES ZERO):
+ Previous attempts that structurally upgraded the algorithm (e.g., L-SHADE) sometimes became **so slow that the evaluation timed out (>120 seconds on a simple sphere problem with only 2000 evals)**. A timeout means the entire generation scores ZERO, which is worse than no change at all.
+ 
++**Gen_74 ALSO TIMED OUT (>120s) with per-individual JADE loops, scoring 0.8846 (down from 0.9289).**
++
+ **Concrete observed failure in gen_11:** The Task Agent correctly implemented L-SHADE (success-history memory, current-to-pbest mutation, archive, LPSR) but the first version used nested Python `for` loops over population *and* dimension with per-gene `rng.random()` calls. That version timed out (>120s) on a 20D sphere with only 2000 evals. It only worked after switching to NumPy array operations. **Do NOT repeat this mistake - vectorize from the start.**
+ 
+ **You MUST keep the algorithm fast:**

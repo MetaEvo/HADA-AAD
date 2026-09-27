@@ -1,0 +1,90 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 6b87a29..5fd2466 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -88,8 +88,15 @@ class DEOptimizer:
+         effective_seed = seed if seed is not None else _config_seed
+         rng = np.random.RandomState(effective_seed)
+ 
+-        # Initialize population - uniform random initialization
+-        pop = rng.uniform(lb, ub, (pop_size, self.dim))
++        # Initialize population - Latin Hypercube Sampling for better coverage
++        if pop_size > 1:
++            lhs = np.zeros((pop_size, self.dim))
++            for j in range(self.dim):
++                perm = rng.permutation(pop_size)
++                lhs[:, j] = (perm + rng.random(pop_size)) / pop_size
++            pop = lb + lhs * (ub - lb)
++        else:
++            pop = rng.uniform(lb, ub, (pop_size, self.dim))
+         
+         # Evaluate initial population
+         evals = 0
+@@ -121,6 +128,7 @@ class DEOptimizer:
+         memory_idx = 0
+         archive = np.empty((0, self.dim))
+         archive_capacity = max(pop_size, 20)
++        stagnation_count = 0
+         
+         while not done:
+             iteration += 1
+@@ -156,8 +164,8 @@ class DEOptimizer:
+             for i in range(pop_size):
+                 # Sample F_i from Cauchy distribution based on history memory
+                 mi = int(rng.randint(memory_size))
+-                mu_F = float(memory_F[mi])
+-                mu_CR = float(memory_CR[mi])
++                mu_F = float(memory_F[mi]) * 0.5 + ctrl_F * 0.5
++                mu_CR = float(memory_CR[mi]) * 0.5 + ctrl_CR * 0.5
+                 F_i = float(mu_F + 0.1 * rng.standard_cauchy())
+                 if F_i <= 0.0:
+                     F_i = 0.1
+@@ -233,6 +241,30 @@ class DEOptimizer:
+                 memory_CR[memory_idx] = float(np.mean(S_CR))
+                 memory_idx = (memory_idx + 1) % memory_size
+             
++            # Stagnation detection: restart worst individuals if no improvement for several iterations
++            if gbest_f < prev_gbest_f - 1e-12:
++                stagnation_count = 0
++            else:
++                stagnation_count += 1
++            
++            if stagnation_count >= 5:
++                n_restart = max(1, int(pop_size * 0.15))
++                worst_idx = np.argsort(fitness)[-n_restart:]
++                sigma = (ub - lb) * 0.02 * (1.0 + progress)
++                for idx in worst_idx:
++                    if evals >= self.max_evals:
++                        break
++                    if rng.random() < 0.5:
++                        pop[idx] = np.clip(gbest + sigma * rng.randn(self.dim), lb, ub)
++                    else:
++                        pop[idx] = rng.uniform(lb, ub, self.dim)
++                    fitness[idx] = evaluate_problem(problem, pop[idx])
++                    evals += 1
++                    if fitness[idx] < gbest_f:
++                        gbest_f = fitness[idx]
++                        gbest = pop[idx].copy()
++                stagnation_count = 0
++            
+             # Compute reward: 1 if improved, 0 otherwise
+             improved = 1.0 if gbest_f < prev_gbest_f else 0.0
+             
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index dbe1b92..01ba422 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -132,10 +132,10 @@ class AdaptiveDEController(ParamController):
+ 
+         # Decaying epsilon relaxation for epsilon-constrained DE.
+         # Use log-scale interpolation for smooth transition.
+-        log_eps_start = float(np_log(self.epsilon_start))
+-        log_eps_end = float(np_log(self.epsilon_end))
++        log_eps_start = float(np.log(self.epsilon_start))
++        log_eps_end = float(np.log(self.epsilon_end))
+         log_eps = log_eps_start + t * (log_eps_end - log_eps_start)
+-        epsilon = float(np_exp(log_eps))
++        epsilon = float(np.exp(log_eps))
+ 
+         # If the current best is still infeasible late in the run, relax epsilon
+         # slightly so the algorithm is not forced into a tiny feasible region.

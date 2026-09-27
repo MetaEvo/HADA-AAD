@@ -1,0 +1,212 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index 51063c2..5a0b6cf 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -62,6 +62,8 @@ class DEOptimizer:
+         self.recorder = recorder
+         self.stats = {}
+         self.pop_size = swarm_size if swarm_size is not None else max(10, 5 * self.dim)
++        self.min_pop_size = int(self.params.get('min_pop_size', max(4, int(0.2 * self.pop_size))))
++        self.pbest_rate = float(self.params.get('pbest_rate', 0.2))
+         self.F = float(self.params.get('F', 0.5))
+         self.CR = float(self.params.get('CR', 0.5))
+ 
+@@ -82,6 +84,7 @@ class DEOptimizer:
+             self.controller.reset({'dim': self.dim, 'lower': self.lower_bounds, 'upper': self.upper_bounds, 'max_evals': self.max_evals})
+ 
+         pop_size = self.pop_size
++        max_pop_size = pop_size
+         lb = self.lower_bounds
+         ub = self.upper_bounds
+         
+@@ -134,15 +137,32 @@ class DEOptimizer:
+                 step_params = self.controller.step(obs)
+                 if isinstance(step_params, dict):
+                     params.update(step_params)
+-            
++                    # Allow the controller to tune L-SHADE population reduction and pbest selection
++                    new_min = float(params.get('min_pop_size', self.min_pop_size))
++                    self.min_pop_size = int(max(4, min(max_pop_size, new_min)))
++                    new_rate = float(params.get('pbest_rate', self.pbest_rate))
++                    self.pbest_rate = float(np.clip(new_rate, 0.05, 0.5))
++
+             base_F = float(params.get('F', self.F))
+             base_CR = float(params.get('CR', self.CR))
+             
+             prev_gbest_f = gbest_f
+ 
++            # L-SHADE linear population size reduction
++            if self.max_evals > 0:
++                target_size = int(round(
++                    max_pop_size + (self.min_pop_size - max_pop_size) * (evals / self.max_evals)
++                ))
++                target_size = max(self.min_pop_size, min(max_pop_size, target_size))
++                if target_size < pop_size:
++                    keep_idx = np.argsort(fitness)[:target_size]
++                    pop = pop[keep_idx].copy()
++                    fitness = fitness[keep_idx].copy()
++                    pop_size = target_size
++
+             # Sort indices by fitness to support pbest selection
+             sorted_idx = np.argsort(fitness)
+-            pbest_num = max(1, int(0.2 * pop_size))
++            pbest_num = max(1, int(self.pbest_rate * pop_size))
+ 
+             # Per-individual parameters and success records
+             F_vals = np.zeros(pop_size)
+diff --git a/metabbo/meta_learning.py b/metabbo/meta_learning.py
+index 901fe26..cf39c17 100644
+--- a/metabbo/meta_learning.py
++++ b/metabbo/meta_learning.py
+@@ -249,7 +249,15 @@ class DiscreteDQNController(ParamController):
+             self._last_action_idx = idx
+             self._last_obs_tensor = x
+ 
+-        return dict(self.actions[idx])
++        action = dict(self.actions[idx])
++        # Dynamically provide L-SHADE-related parameters without expanding the discrete action space
++        evals = float(observation.get('evals', 0.0))
++        max_evals = float(observation.get('max_evals', max(1.0, evals)))
++        progress = min(1.0, evals / max(1.0, max_evals))
++        action['min_pop_size'] = 4.0
++        # More pbest exploitation as optimization progresses
++        action['pbest_rate'] = float(np.clip(0.2 + 0.15 * progress, 0.05, 0.5))
++        return action
+ 
+     def store_reward(self, reward: float, next_observation: Dict[str, Any], done: bool):
+         """Store a complete transition (obs, action, reward, next_obs, done) in the replay buffer."""
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 6ca3bfd..c9a854a 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -144,5 +144,10 @@ class AdaptiveDEController(ParamController):
+         if current_gbest_cv is not None and t > 0.5 and current_gbest_cv > epsilon:
+             epsilon = max(epsilon, min(current_gbest_cv * 0.5, self.epsilon_start))
+ 
++        # L-SHADE inspired population reduction and pbest adaptation
++        min_pop_size = 4.0
++        pbest_rate = max(0.05, min(0.5, 0.2 + 0.1 * t))
+         return {'F': float(F), 'CR': float(CR), 'strategy': strategy,
+-                'epsilon': float(epsilon)}
+\ No newline at end of file
++                'epsilon': float(epsilon),
++                'min_pop_size': float(min_pop_size),
++                'pbest_rate': float(pbest_rate)}
+\ No newline at end of file
+diff --git a/hyper_agent.py b/hyper_agent.py
+index b3a8a7f..40cdb54 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -141,9 +141,30 @@ The Task Agent MUST implement one of: JADE, L-SHADE, CMA-ES, or another complete
+    - [ ] The code can actually run without AttributeError or NameError
+    - [ ] Changes are incremental and don't break existing functionality
+ 
+-Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+-
+-GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code.
++### 11. MANDATORY VERIFICATION WORKFLOW FOR THIS GENERATION (run BEFORE editing)
++You MUST read these files in order:
++1. `{eval_path}/gen_N/generate.log` — look for `[TRAIN] Run X failed:`, `AttributeError`, `NameError`, `timeout`.
++2. `{eval_path}/gen_N/<domain>_eval/agent_evals/all_patch.diff` — inspect the diff.
++3. `{eval_path}/gen_N/<domain>_eval/agent_evals/chat_history_task_agent.md` — check whether the Task Agent actually read `ec_algorithm.py` and the domain eval file before editing.
++
++Then run (in bash) to check the CURRENT code state:
++```bash
++grep -n "class CMAESOptimizer\|class JADEOptimizer\|class GLPSO\|class LSHADE\|current-to-pbest/1\|Linear Population\|np.linalg.eigh" /hada/metabbo/ec_algorithm.py
++```
++
++### 12. DETERMINE THE TASK AGENT'S ACTUAL CHANGE (CRITICAL)
++- If the latest `all_patch.diff` ONLY changes H, M_F, M_CR, archive_cap, pbest_num, memory_index, base_F, base_CR and KEEPS `current-to-pbest/1` mutation — this is a REJECTED SHADE tweak. Your next task_agent.py prompt MUST explicitly brand this as failure and demand a CMA-ES class or L-SHADE linear population reduction or a different mutation strategy.
++- If the latest patch adds a new algorithm class (`CMAESOptimizer`, `JADEOptimizer`, etc.) or implements Linear Population Size Reduction or changes mutation to rand/2, best/1, current-to-rand/1 — this is GOOD. Reinforce the exact behavior with a positive "KEEP DOING THIS" message.
++- If the Task Agent's code caused `AttributeError`/`NameError`/`ImportError` in `generate.log`, your next prompt MUST add an explicit instruction: "Before submitting, run `python -m py_compile /hada/metabbo/ec_algorithm.py /hada/metabbo/param_controller.py /hada/metabbo/meta_learning.py` and fix any undefined names."
++
++### 13. MANDATORY NEXT-PROMPT REQUIREMENT
++Whatever you edit into `task_agent.py`, you MUST include ALL of the following in the new Task Agent prompt:
++1. A statement of the exact algorithm currently in `ec_algorithm.py` (read it first).
++2. An explicit list of REJECTED tweaks (parameter-only changes, SHADE constant changes, boundary handling, restart logic, controller blending, LHS init).
++3. An explicit call to implement ONE of: CMA-ES, JADE, L-SHADE, rand/2, best/1, current-to-rand/1, or a completely new optimizer class with `DEOptimizer` alias.
++4. A mandatory self-verification step using `grep` to prove the search operator changed (e.g., grep for `np.linalg.eigh` for CMA-ES, or `new_size`/`N_min` for L-SHADE, or a new mutation strategy).
++
++GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code. Make the above verification workflow a hard requirement for every generation.
+ """
+ 
+         new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all', require_tool='str_replace')
+\ No newline at end of file
+diff --git a/task_agent.py b/task_agent.py
+index ab9ec6c..0d94ecc 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -218,18 +218,24 @@ while not done:
+ ### Option B: Add a new class `JADEOptimizer` (copy DEOptimizer, change mutation)
+ Keep the old `DEOptimizer` or alias: add `DEOptimizer = JADEOptimizer` at the bottom of the file so the caller doesn't break. Make the new class implement JADE/current-to-pbest with archive and parameter adaptation.
+ 
+-### Option C: L-SHADE
+-Start from the existing SHADE code (already in the file) and add **Linear Population Size Reduction**: 
++### Option C: L-SHADE (RECOMMENDED - the current code is already SHADE, just add population reduction)
++The current code already has SHADE's `current-to-pbest/1` + archive + M_F/M_CR memory. To make it L-SHADE, you ONLY need to add Linear Population Size Reduction. Insert the following block at the END of the while loop, right before the line `done = (evals >= self.max_evals)`:
++
+ ```python
+-# At end of each iteration, after selection:
+-N_min = max(4, int(0.25 * initial_pop_size))
+-new_pop_size = round(initial_pop_size + (N_min - initial_pop_size) * (evals / max_evals))
+-if new_pop_size < pop_size:
+-    keep_idx = np.argsort(fitness)[:new_pop_size]
+-    pop = pop[keep_idx]; fitness = fitness[keep_idx]; pop_old = pop_old[keep_idx]
+-    pop_size = new_pop_size
++# ---- L-SHADE: Linear Population Size Reduction ----
++N_min = max(4, int(0.25 * self.pop_size))
++new_size = int(round(self.pop_size + (N_min - self.pop_size) * (evals / self.max_evals)))
++if new_size < pop_size:
++    keep_idx = np.argsort(fitness)[:new_size]
++    pop = pop[keep_idx].copy()
++    fitness = fitness[keep_idx].copy()
++    pop_size = new_size
++    # Shrink archive if it exceeds the new population size (works for both list and numpy array)
++    if len(archive) > pop_size:
++        archive = archive[-pop_size:]
+ ```
+-Also fix the existing SHADE to use a proper archive (it currently grows unbounded but should be capped and used in mutation).
++
++This is a structural change (adaptive population size) that is NOT just a parameter tweak.
+ 
+ ### Option D: CMA-ES
+ Implement a simplified CMA-ES as a new class:
+@@ -267,7 +273,7 @@ DEOptimizer = CMAESOptimizer  # alias at bottom so dqn_de_util.py still works
+ 4. Verify: `python -m py_compile /hada/metabbo/ec_algorithm.py /hada/metabbo/param_controller.py /hada/metabbo/meta_learning.py`  (via bash tool)
+ 5. Optionally run a short smoke test
+ 
+-## FINAL CHECKLIST (BEFORE SUBMITTING)
++## FINAL CHECKLIST (BEFORE SUBMITTING) - EVERY ITEM IS MANDATORY
+ - [ ] I actually used `editor` with `str_replace` (REQUIRED)
+ - [ ] I implemented a NEW algorithm or MAJOR mechanism, not just parameter tweaks
+ - [ ] `DEOptimizer` class and `optimize(self, problem, x0=None, train=True, seed=None)` still exist (or alias exists)
+@@ -275,6 +281,29 @@ DEOptimizer = CMAESOptimizer  # alias at bottom so dqn_de_util.py still works
+ - [ ] Code compiles with py_compile
+ - [ ] Changes are incremental (one module focus)
+ 
++### PROVE YOUR CHANGE IS NOT A SHADE TWEAK (RUN THESE IN bash BEFORE SUBMITTING)
++Run these commands and confirm the output matches what you implemented:
++
++**If you implemented CMA-ES:**
++```bash
++grep -n "np.linalg.eigh\|CMAESOptimizer\|p_s = (1 - cs)" /hada/metabbo/ec_algorithm.py
++```
++This MUST show `np.linalg.eigh` (covariance eigendecomposition) or `CMAESOptimizer`.
++
++**If you implemented L-SHADE (population reduction):**
++```bash
++grep -n "new_size\|Linear Population\|N_min = max(4" /hada/metabbo/ec_algorithm.py
++```
++This MUST show the Linear Population Size Reduction block.
++
++**If you changed the mutation strategy (JADE, rand/2, best/1, etc.):**
++```bash
++grep -n "rand/2\|best/2\|current-to-rand\|pbest/1" /hada/metabbo/ec_algorithm.py
++```
++This MUST show a mutation strategy DIFFERENT from the existing `current-to-pbest/1`.
++
++**AUTOMATIC REJECTION:** If your diff keeps `current-to-pbest/1` as the ONLY mutation strategy and does NOT add a new class (e.g., `CMAESOptimizer`, `JADEOptimizer`) OR does NOT add the `Linear Population Size Reduction` block, then your patch is a SHADE tweak and will score ZERO. Do not submit it.
++
+ Task input:
+ ```
+ {inputs}

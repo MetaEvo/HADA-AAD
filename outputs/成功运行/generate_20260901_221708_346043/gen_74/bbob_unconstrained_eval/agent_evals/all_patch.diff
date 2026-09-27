@@ -1,0 +1,267 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index a24be10..ad11a11 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -62,6 +62,7 @@ class DEOptimizer:
+         self.recorder = recorder
+         self.stats = {}
+         self.pop_size = swarm_size if swarm_size is not None else max(10, 5 * self.dim)
++        self.min_pop_size = int(max(4, np.ceil(self.dim * 0.1)))
+         self.F = float(self.params.get('F', 0.5))
+         self.CR = float(self.params.get('CR', 0.5))
+ 
+@@ -88,8 +89,26 @@ class DEOptimizer:
+         effective_seed = seed if seed is not None else _config_seed
+         rng = np.random.RandomState(effective_seed)
+ 
+-        # Initialize population - uniform random initialization
+-        pop = rng.uniform(lb, ub, (pop_size, self.dim))
++        # Initialize population - Latin hypercube + a few near-center/corner points
++        init_pts = np.empty((0, self.dim))
++        # Latin hypercube stratified sampling
++        n_lhs = int(pop_size * 0.7)
++        if n_lhs > 0:
++            lhs = np.empty((n_lhs, self.dim))
++            for j in range(self.dim):
++                u = (rng.rand(n_lhs) + np.arange(n_lhs)) / n_lhs
++                lhs[:, j] = lb[j] + (ub[j] - lb[j]) * u
++            rng.shuffle(lhs)
++            init_pts = np.vstack([init_pts, lhs])
++        # Remaining: uniform random (for diversity)
++        n_rand = pop_size - n_lhs
++        if n_rand > 0:
++            init_pts = np.vstack([init_pts, rng.uniform(lb, ub, (n_rand, self.dim))])
++        # Also add current global optimum guess: center (if within bounds)
++        center = 0.5 * (lb + ub)
++        if np.all(center >= lb) and np.all(center <= ub) and pop_size > 0:
++            init_pts[0] = center
++        pop = init_pts[:pop_size]
+         
+         # Evaluate initial population
+         evals = 0
+@@ -113,7 +132,7 @@ class DEOptimizer:
+         # JADE external archive and success-history memory
+         archive = np.empty((0, self.dim), dtype=float)
+         archive_size = max(pop_size, 10)
+-        memory_len = 5
++        memory_len = 10
+         memory_F = np.full(memory_len, float(self.F))
+         memory_CR = np.full(memory_len, float(self.CR))
+         memory_pos = 0
+@@ -123,9 +142,28 @@ class DEOptimizer:
+         # Main loop
+         iteration = 0
+         done = False
+-        
++        stagnation = 0
++        last_gbest_f = float(gbest_f)
++        current_pop_size = pop_size
++
++        def reflect_to_bounds(x):
++            """Reflect out-of-bounds coordinates back into [lb, ub]."""
++            y = x.copy()
++            y = np.where(y < lb, 2.0 * lb - y, y)
++            y = np.where(y > ub, 2.0 * ub - y, y)
++            return np.clip(y, lb, ub)
++
+         while not done:
+             iteration += 1
++            # Linear population size reduction (L-SHADE style)
++            current_pop_size = max(self.min_pop_size, int(round(
++                pop_size * (1.0 - float(evals) / max(1.0, float(self.max_evals))))))
++            if current_pop_size < pop.shape[0]:
++                keep_idx = np.argsort(fitness)[:current_pop_size]
++                pop = pop[keep_idx].copy()
++                fitness = fitness[keep_idx].copy()
++            active_pop_size = pop.shape[0]
++
+             params = dict(self.params)
+             if self.controller is not None:
+                 obs = {'iteration': iteration, 'evals': evals, 'gbest_f': gbest_f, 
+@@ -156,10 +194,10 @@ class DEOptimizer:
+             # Generate trial vectors using JADE (current-to-pbest/1)
+             new_pop = np.copy(pop)
+             # Cauchy/randn mutation factors per individual
+-            F_i_list = np.empty(pop_size, dtype=float)
+-            CR_i_list = np.empty(pop_size, dtype=float)
++            F_i_list = np.empty(active_pop_size, dtype=float)
++            CR_i_list = np.empty(active_pop_size, dtype=float)
+ 
+-            for i in range(pop_size):
++            for i in range(active_pop_size):
+                 # Sample F_i from Cauchy distribution around a random memory entry
+                 attempts = 0
+                 F_i = F_ctrl
+@@ -176,18 +214,18 @@ class DEOptimizer:
+                 CR_i = float(np.clip(rng.randn() * 0.1 + gen_memory_CR[m_idx], 0.0, 1.0))
+                 CR_i_list[i] = CR_i
+ 
+-                # Choose p-best from top p*pop_size individuals
+-                p_num = max(1, int(round(p_best * pop_size)))
++                # Choose p-best from top p*active_pop_size individuals
++                p_num = max(1, int(round(p_best * active_pop_size)))
+                 p_idx = int(sorted_idx[rng.randint(0, p_num)])
+                 x_best_p = pop[p_idx]
+ 
+                 # Select two distinct random indices from pop and archive
+                 # Use union of pop + archive for greater diversity
+-                candidates = [idx for idx in range(pop_size) if idx != i]
++                candidates = [idx for idx in range(active_pop_size) if idx != i]
+                 if candidates:
+                     r1 = int(rng.choice(candidates))
+                 else:
+-                    r1 = int(rng.randint(0, pop_size))
++                    r1 = int(rng.randint(0, active_pop_size))
+ 
+                 # Choose r2 from union(pop, archive), cannot equal i or r1
+                 if archive.shape[0] > 0:
+@@ -195,10 +233,10 @@ class DEOptimizer:
+                         r2 = int(rng.randint(0, archive.shape[0]))
+                         x_r2 = archive[r2]
+                     else:
+-                        r2_idx = int(rng.randint(0, pop_size))
++                        r2_idx = int(rng.randint(0, active_pop_size))
+                         x_r2 = pop[r2_idx]
+                 else:
+-                    r2_idx = int(rng.randint(0, pop_size))
++                    r2_idx = int(rng.randint(0, active_pop_size))
+                     x_r2 = pop[r2_idx]
+ 
+                 # Mutation: current-to-pbest/1
+@@ -211,12 +249,12 @@ class DEOptimizer:
+                     if rng.random() < CR_i or j == j_rand:
+                         trial[j] = mutant[j]
+ 
+-                # Boundary handling: clip to bounds
+-                trial = np.clip(trial, lb, ub)
++                # Boundary handling: reflect into bounds for better diversity
++                trial = reflect_to_bounds(trial)
+                 new_pop[i] = trial
+ 
+             # Evaluate trial vectors with JADE selection and archive updates
+-            for i in range(pop_size):
++            for i in range(active_pop_size):
+                 if evals >= self.max_evals:
+                     done = True
+                     break
+@@ -244,6 +282,31 @@ class DEOptimizer:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+ 
++            # Stagnation monitoring and diversity injection
++            if gbest_f < last_gbest_f - 1e-12:
++                stagnation = 0
++                last_gbest_f = gbest_f
++            else:
++                stagnation += 1
++
++            if stagnation >= 8 and evals < self.max_evals:
++                # Replace the worst 40% with samples around current best to escape local optima
++                n_replace = max(1, int(active_pop_size * 0.4))
++                worst_idx = np.argsort(fitness)[-n_replace:]
++                sigma = 0.1 * (ub - lb)
++                for wi in worst_idx:
++                    if evals >= self.max_evals:
++                        done = True
++                        break
++                    pop[wi] = np.clip(gbest + rng.randn(self.dim) * sigma, lb, ub)
++                    trial_f = evaluate_problem(problem, pop[wi])
++                    evals += 1
++                    fitness[wi] = trial_f
++                    if trial_f < gbest_f:
++                        gbest_f = trial_f
++                        gbest = pop[wi].copy()
++                stagnation = 0
++
+             # Update JADE success-history memory
+             if len(SF) > 0:
+                 deltas = np.array(S_delta, dtype=float)
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 1944065..476e195 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -146,4 +146,56 @@ class AdaptiveDEController(ParamController):
+             epsilon = max(epsilon, min(current_gbest_cv * 0.5, self.epsilon_start))
+ 
+         return {'F': float(F), 'CR': float(CR), 'strategy': strategy,
+-                'epsilon': float(epsilon)}
+\ No newline at end of file
++                'epsilon': float(epsilon)}
++
++
++class LSHADEHeuristicController(ParamController):
++    """Heuristic L-SHADE style controller for DE/JADE optimization.
++
++    Provides smooth progress-based adaptation of F, CR, and p_best,
++    plus stagnation-triggered diversity boost. Designed for use with
++    the L-SHADE style linear population size reduction in ec_algorithm.
++    """
++    def __init__(self, f_start=0.9, f_end=0.3, cr_start=0.9, cr_end=0.4,
++                 p_best_start=0.3, p_best_end=0.1, stagnation_boost=0.25,
++                 stagnation_threshold=6):
++        self.f_start = f_start
++        self.f_end = f_end
++        self.cr_start = cr_start
++        self.cr_end = cr_end
++        self.p_best_start = p_best_start
++        self.p_best_end = p_best_end
++        self.stagnation_boost = stagnation_boost
++        self.stagnation_threshold = stagnation_threshold
++
++    def reset(self, problem_meta):
++        self.at = 0
++        self.last_gbest = None
++        self.stagnation_count = 0
++
++    def step(self, observation):
++        self.at = observation.get('iteration', self.at + 1)
++        max_evals = float(observation.get('max_evals', 10000))
++        evals = float(observation.get('evals', 0))
++        progress = min(1.0, evals / max(1.0, max_evals))
++
++        F = self.f_start * (1.0 - progress) + self.f_end * progress
++        CR = self.cr_start * (1.0 - progress) + self.cr_end * progress
++        p_best = self.p_best_start * (1.0 - progress) + self.p_best_end * progress
++
++        gbest = observation.get('gbest_f', None)
++        if gbest is not None and self.last_gbest is not None:
++            if gbest < self.last_gbest - 1e-12:
++                self.stagnation_count = 0
++            else:
++                self.stagnation_count += 1
++        self.last_gbest = gbest
++
++        if self.stagnation_count >= self.stagnation_threshold:
++            F = min(1.0, F + self.stagnation_boost)
++            CR = min(1.0, CR + self.stagnation_boost)
++            p_best = max(0.05, p_best + 0.1)
++            self.stagnation_count = 0
++
++        return {'F': float(F), 'CR': float(CR), 'p_best': float(p_best),
++                'strategy': 'jade'}
+\ No newline at end of file
+diff --git a/task_agent.py b/task_agent.py
+index 33375f6..cf43e5e 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -254,6 +254,20 @@ A structurally upgraded algorithm that is too slow will cause the evaluation to
+ - Keep archive operations cheap (simple append/truncate, not full scans).
+ - **MANDATORY smoke test before finishing**: run a quick 20D sphere test with 2000 evals and ensure it completes in <30 seconds.
+ 
++## MANDATORY STATIC CHECKS (RUN BEFORE SUBMITTING)
++
++**Gen_62 ignored the vectorized template and wrote per-individual Python loops again, scoring only 0.8549 (down from gen_50's 0.9289). This is the #1 recurring failure.**
++
++Before you submit, you MUST run these checks via bash and confirm all pass:
++
++```bash
++cd /hada/metabbo && echo '--- Checking for forbidden per-individual loops ---' && grep -n 'for i in range(pop_size)' ec_algorithm.py || echo 'OK: no forbidden loop'; grep -n 'for j in range(self.dim)' ec_algorithm.py || echo 'OK: no forbidden loop'; echo '--- Checking LPSR is present ---' && grep -n 'pop_min\|new_pop_size\|LPSR\|Linear Population' ec_algorithm.py || echo 'WARNING: LPSR NOT FOUND - SHADE/JADE without LPSR is REJECTED'; echo '--- Checking class/alias ---' && grep -n 'class DEOptimizer\|DEOptimizer =' ec_algorithm.py
++```
++
++If the grep finds `for i in range(pop_size)` or `for j in range(self.dim)` anywhere in the search loop, **STOP and rewrite using the vectorized NumPy pattern below**. Do not submit code that contains these loops.
++
++If you implement any JADE/SHADE-style algorithm and `LPSR`/`new_pop_size`/`pop_min` is not present, **STOP and add Linear Population Size Reduction** — SHADE/JADE without LPSR is a known non-improvement (gen_29=0.8875, gen_62=0.8549).
++
+ ## VECTORIZED IMPLEMENTATION PATTERN (USE THIS TO AVOID TIMEOUTS)
+ 
+ If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate all mutant vectors as a NumPy array:

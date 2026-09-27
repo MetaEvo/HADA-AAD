@@ -1,0 +1,170 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 1c5da07..caf350f 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -148,7 +148,9 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ ## ANALYSIS GUIDANCE (what to look at before making changes):
+ 
+-1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes.
++1. **ALWAYS read the previous generation's all_patch.diff** to see what the Task Agent actually changed. If the diff only shows parameter tweaks (changing w, c1, c2 values, changing memory_size from 5 to 10, changing archive_size), that's a FAILURE - your next task_agent.py prompt must be even more forceful about making structural changes.
++
++1a. **NEW (gen_54): The Task Agent changed ONLY `memory_size` from 5 to 10 inside an existing SHADE implementation, scoring 0.9075.** This is the most degenerate form of parameter tweaking - a single constant changed. Your updated task_agent.py prompt MUST explicitly cite this exact example and state that such changes will be REJECTED.
+ 
+ 1b. **NEW (gen_38): If the diff shows another JADE/SHADE DE variant using archive + current-to-pbest + success-history memory, that's ALSO a FAILURE.** These DE-based adaptive variants have now plateaued around 0.886-0.924 and are unlikely to reach the best-known 0.93121. Your updated task_agent.py prompt MUST explicitly forbid repeating this DE recipe and MUST direct the Task Agent toward CMA-ES or a fundamentally different algorithm family.
+ 
+diff --git a/hyper_agent_improvements.md b/hyper_agent_improvements.md
+index 4c1ba6d..8da9eb0 100644
+--- a/hyper_agent_improvements.md
++++ b/hyper_agent_improvements.md
+@@ -1,53 +1,53 @@
+-# Meta Agent Improvements - Generation 38 Analysis
++# Meta Agent Improvements - Generation 55 Analysis
+ 
+ ## What was analyzed
+ 
+-### Latest generation (gen_38)
+-- **Task Agent's diff**: `/hada/outputs/generate_20260828_142858_379759/gen_38/bbob_unconstrained_eval/agent_evals/all_patch.diff`
+-- The Task Agent implemented a **JADE-style adaptive DE** with:
+-  - External archive (max size max(pop_size, 100))
+-  - current-to-pbest/1 mutation with p_best_frac=0.2
+-  - Per-individual F and CR perturbation (Cauchy/Gaussian around base values)
+-  - Boundary handling via random re-initialization
+-  - Also fixed a bug in param_controller.py (np_log -> np.log)
+-- **Score**: 0.8861, which is **BELOW** the best-known 0.93121 (from gen_11 L-SHADE)
++### Latest generation (gen_54)
++- **Task Agent's diff**: `/hada/outputs/generate_20260828_142858_379759/gen_54/bbob_unconstrained_eval/agent_evals/all_patch.diff`
++- The Task Agent changed **ONLY `memory_size` from 5 to 10** inside the existing SHADE implementation
++- **Score**: 0.9075, which is **BELOW** the best-known 0.93121
++- This is the most degenerate form of parameter tweaking - a single constant changed
+ 
+ ### Key observation
+-- The Task Agent has now tried multiple DE variants: plain DE tweaks, SHADE, JADE with archive + pbest + memory.
+-- All DE-based adaptive variants have plateaued around 0.886-0.924.
+-- The best-known score (0.93121) came from gen_11's L-SHADE with LPSR + restart.
+-- **CMA-ES is the logical next step** - it is the state-of-the-art for continuous black-box optimization on BBOB and has NOT yet been tried.
++- The current ec_algorithm.py already contains a full SHADE/DE variant (archive, current-to-pbest, success-history memory)
++- gen_54's diff was just `memory_size = 5` → `memory_size = 10` - a pure parameter tweak
++- DE-family algorithms (SHADE/JADE/L-SHADE variants) have plateaued around 0.886-0.924 for many generations
++- Best-known score (0.93121) was from gen_11's L-SHADE; no DE variant has beaten it since
++- **CMA-ES is the recommended next algorithm family** (state-of-the-art for continuous BBOB optimization) - it has NOT yet been implemented
+ 
+ ## Changes made
+ 
+ ### 1. `/hada/task_agent.py`
+-- **Replaced the SHADE/JADE implementation guide** with a **mandatory CMA-ES implementation guide** that includes:
+-  - Full CMA-ES state initialization (lambda, mu, weights, mueff, cc, cs, c1, cmu, damps)
+-  - Evolution path updates (pc, ps)
+-  - Covariance matrix adaptation equations
+-  - Step-size adaptation
+-  - Vectorized sampling code template using NumPy
+-  - Performance notes (avoid full eigendecomposition every generation)
+-- **Added a new section** "LATEST EVALUATION - DE VARIANTS HAVE PLATEAUED (gen_38)" stating:
+-  - gen_38 JADE scored 0.8861, below best 0.93121
+-  - **Forbids** submitting another DE variant with archive + current-to-pbest + success-history memory
+-  - **Mandates** CMA-ES as the #1 priority
+-- **Updated the MANDATORY WORKFLOW** to:
+-  - Reference gen_38 diff as a "do NOT repeat" example
+-  - Require verification that the change is "structural & non-DE"
+-  - Explicitly reject JADE/SHADE recipe
++
++**Updated the ABSOLUTE REQUIREMENT section**:
++- Added explicit reference to gen_54's failure (only changed memory_size 5→10)
++- Made it crystal clear that changing constants (F, CR, memory_size, swarm_size, archive_capacity, stagnation_threshold) is NOT acceptable
++- Added HARD REJECTION CRITERIA checklist with concrete failure conditions including:
++  - Only changed numeric constants
++  - Kept DE/SHADE/JADE mutation-crossover-selection as core loop
++  - Added mechanism on top of existing DE without replacing core
++  - Did not call editor str_replace on ec_algorithm.py
++  - Fewer than 100 new lines of algorithm logic
++
++**Updated MANDATORY WORKFLOW section**:
++- Step 3 now points to gen_54's degenerate diff instead of gen_38
++- Step 6 now MANDATES implementing CMA-ES or GLPSO (not just "preferably" CMA-ES)
++- Step 7/8 now state that non-structural changes will be REJECTED
++- Added requirement to replace the ENTIRE main search loop
++- Enforces at least 100 lines of NEW algorithm logic
+ 
+ ### 2. `/hada/hyper_agent.py`
+-- **Updated algorithm recommendation** for bbob_unconstrained: CMA-ES is now the #1 priority, with DE variants only acceptable if combined with CMA-ES
+-- **Added analysis guidance 1b**: recognizes that another JADE/SHADE DE variant with archive + pbest + memory is also a FAILURE pattern (not just parameter tweaks)
++
++**Updated ANALYSIS GUIDANCE section**:
++- Added explicit mention of changing memory_size as a failure pattern in item 1
++- Added new item 1a citing gen_54's specific failure (memory_size 5→10 scored 0.9075)
++- Kept existing 1b about gen_38's JADE/SHADE plateau
+ 
+ ## Expected impact
+-- The Task Agent should now implement **CMA-ES** instead of another DE variant.
+-- The prompt provides enough concrete detail (initialization, update equations, vectorized sampling) that the LLM should be able to produce a working CMA-ES implementation.
+-- The explicit prohibition on JADE/SHADE archive+pbest+memory should prevent the Task Agent from repeating the gen_38 approach.
++- The Task Agent should now implement **CMA-ES or GLPSO** instead of another parameter tweak or DE variant.
++- The prompt now has concrete rejection criteria that the Task Agent can self-check against before submitting.
++- The explicit prohibition on single-constant changes (with the gen_54 example) should prevent degenerate parameter tweaks.
+ 
+ ## Next steps / recommendations
+-- If gen_39 still fails to improve, consider:
+-  - Adding an even more concrete complete CMA-ES code example (not just pseudocode)
+-  - Suggesting IPOP-CMA-ES or BIPOP-CMA-ES restart strategies explicitly
+-  - Checking if the meta-learning layer (DQN controller) needs to be changed to work with CMA-ES parameters
++- Monitor whether the Task Agent actually implements CMA-ES with 100+ lines of new covariance adaptation logic.
++- If the prompt still results in DE variants, consider adding a complete, copy-paste-ready CMA-ES reference implementation directly in the prompt.
+diff --git a/task_agent.py b/task_agent.py
+index 9967be4..227f254 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -75,12 +75,24 @@ So your modified `ec_algorithm.py` MUST still provide:
+ ## WHAT TO IMPROVE (be aggressive - try completely different algorithms):
+ 
+ ### ⚠️ ABSOLUTE REQUIREMENT: YOU MUST REPLACE THE ALGORITHM, NOT JUST TWEAK PARAMETERS
+-The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. Scores have plateaued because prior attempts only tweaked parameters (w, c1, c2, F, CR). **THIS IS A FAILURE MODE.**
++The current code already contains a SHADE/DE variant with archive, current-to-pbest, and success-history memory. Scores have plateaued because prior attempts only tweaked parameters (w, c1, c2, F, CR, memory_size, archive_size, population_size). **THIS IS A FAILURE MODE.**
++
++**CONCRETE EVIDENCE (gen_54):** The previous Task Agent changed ONLY `memory_size` from 5 to 10 inside an existing SHADE implementation. The score was 0.9075, still below the best-known 0.93121. This single-constant tweak is EXACTLY the kind of change that will be REJECTED. Do NOT repeat it.
++
+ You MUST make a **structural change to the core search mechanism**:
+-- Replace the mutation/crossover/selection logic in `DEOptimizer` with a fundamentally different algorithm (SHADE, JADE, CMA-ES, L-SHADE, etc.)
++- Replace the mutation/crossover/selection logic in `DEOptimizer` with a fundamentally different algorithm (CMA-ES, GLPSO, etc. - see below)
+ - Add new mechanisms: external archive, parameter adaptation, population restart, local search, opposition-based learning, diversity maintenance
+-- Changing constants, adding tiny random perturbations, or altering initialization only is NOT acceptable
+-- If your diff only changes numeric literals (e.g., F=0.5 to F=0.7, swarm_size 40 to 50, adding `+ 0.1*rand`), it will be rejected
++- Changing constants (F, CR, memory_size, swarm_size, archive_capacity, stagnation_threshold) is NOT acceptable
++- Adding/removing a single line like `memory_size = 10` is NOT acceptable
++- If your diff only changes numeric literals or `params.get(...)` defaults, it will be rejected
++
++**HARD REJECTION CRITERIA - your patch will be marked FAILED if ANY of these are true:**
++- [ ] You only changed numeric constants (memory_size, F, CR, swarm_size, archive_capacity, stagnation_count threshold)
++- [ ] You kept the DE/SHADE/JADE mutation-crossover-selection as the core loop
++- [ ] You added a mechanism (OBL, LPSR, restart) on top of the existing DE loop without replacing the core algorithm
++- [ ] You did not call `editor str_replace` on `/hada/metabbo/ec_algorithm.py` (viewing is NOT enough)
++- [ ] You introduced methods/variables that don't exist or broke the DEOptimizer/optimize interface
++- [ ] Your diff contains fewer than 100 new lines of algorithm logic (CMA-ES covariance update, GLPSO comprehensive learning, etc.)
+ 
+ ### 🔥 CURRENT STATE OF THE ART (READ THIS BEFORE YOU START):
+ The **BEST-KNOWN SCORE is 0.93121** achieved by **generation 11's L-SHADE implementation** (Success-History Adaptive DE + Linear Population Size Reduction + stagnation-triggered restart). See the winning diff at:
+@@ -214,16 +226,17 @@ mean = weights @ X[order]  # new mean
+ 
+ ## MANDATORY WORKFLOW - FOLLOW THESE STEPS:
+ 1. **READ the domain code**: Use editor view on `/hada/domains/{domain}/dqn_de_util.py` to understand exactly how your code is called and scored
+-2. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py` - check if it already has JADE/SHADE archive+pbest+memory (if so, you MUST replace it with CMA-ES or a non-DE algorithm)
+-3. **READ the latest attempt (gen_38, JADE variant scored 0.8861)**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_38/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this shows the JADE/SHADE archive+pbest approach that has plateaued. **DO NOT repeat it.**
+-4. **READ the best-known winning diff (gen_11, score 0.93121)**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this shows what a winning structural L-SHADE change looks like (though L-SHADE variants have now plateaued, so CMA-ES is the recommended next step)
++2. **READ the current algorithm**: Use editor view on `/hada/metabbo/ec_algorithm.py` - it currently contains a SHADE/DE variant. You MUST replace its core search loop with CMA-ES or GLPSO.
++3. **READ the latest attempt (gen_54, SHADE memory_size tweak scored 0.9075)**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_54/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this shows a degenerate single-constant tweak that MUST NOT be repeated.
++4. **READ the best-known winning diff (gen_11, score 0.93121)**: Use editor view on `/hada/outputs/generate_20260828_142858_379759/gen_11/bbob_unconstrained_eval/agent_evals/all_patch.diff` - this shows a structural L-SHADE change that achieved the best score, but these DE variants have now plateaued.
+ 5. **READ the meta-learning code**: Use editor view on `/hada/metabbo/meta_learning.py`
+-6. **MAKE your changes**: Use editor str_replace to actually modify the code files
++6. **IMPLEMENT CMA-ES OR GLPSO (MANDATORY)**: Replace the ENTIRE main search loop inside `DEOptimizer.optimize()` with at least 100 lines of NEW algorithm logic. Use the detailed templates in the sections above. Do NOT keep any DE mutation/crossover as the primary operator.
++7. **MAKE your changes**: Use editor str_replace to actually modify `/hada/metabbo/ec_algorithm.py`
+    - **YOU MUST call `editor` with command='str_replace' at least once to modify `/hada/metabbo/ec_algorithm.py`**
+-   - **If you have not modified ec_algorithm.py with a structural algorithm change (preferably CMA-ES), your response is INCOMPLETE.**
+-7. **VERIFY your diff is structural & non-DE**: Re-read the modified `ec_algorithm.py` and confirm you changed the core search mechanism (e.g., implemented CMA-ES sampling/update equations). If your diff only tweaks constants, adds random noise, or makes parameters configurable via controller, it will score poorly and is NOT acceptable. **If your diff keeps the JADE/SHADE archive+pbest+memory DE recipe, it will be rejected.**
+-8. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
+-9. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
++   - **If you have not made a structural CMA-ES/GLPSO replacement (100+ new lines), your response is INCOMPLETE and will be REJECTED.**
++8. **VERIFY your diff is structural & non-DE**: Re-read the modified `ec_algorithm.py` and confirm you changed the core search mechanism (e.g., implemented CMA-ES sampling/update equations or GLPSO comprehensive learning). If your diff only tweaks constants, adds random noise, or makes parameters configurable via controller, it will score poorly and is NOT acceptable. **If your diff keeps the DE/SHADE/JADE archive+pbest+memory loop as the core, it will be REJECTED.**
++9. **VERIFY syntax**: Run `python -c "import ast; ast.parse(open('/hada/metabbo/ec_algorithm.py').read()); print('SYNTAX OK')"`
++10. **VERIFY interface**: Make sure `DEOptimizer` class and its `optimize` method still exist with compatible signatures
+ 
+ ## ⚠️ PERFORMANCE AND TIMEOUT WARNING (CRITICAL - A TIMEOUT SCORES ZERO):
+ Previous attempts that structurally upgraded the algorithm (e.g., L-SHADE) sometimes became **so slow that the evaluation timed out (>120 seconds on a simple sphere problem with only 2000 evals)**. A timeout means the entire generation scores ZERO, which is worse than no change at all.

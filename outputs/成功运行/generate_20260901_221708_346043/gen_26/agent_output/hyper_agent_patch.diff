@@ -1,0 +1,77 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index ea8cd0c..f12c6f5 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -93,6 +93,25 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+    - Change the population structure
+    - Add new mechanisms (archive, migration, restart)
+ 
++### ALGORITHM REPLACEMENT MANDATE (HIGHEST PRIORITY)
++
++If the latest generation's all_patch.diff only tweaks DE parameters (F, CR, w, c1, c2), adjusts mutation/crossover operators within DE, or makes incremental improvements to the existing DE implementation WITHOUT changing the underlying algorithm class, then you MUST instruct the Task Agent to implement a completely different algorithm. Specifically:
++
++- If current is DE, switch to CMA-ES, SHADE, JADE, or GLPSO (pick ONE and implement it fully)
++- If current is PSO, switch to DE, CMA-ES, or SHADE
++- If current is already SHADE/JADE, switch to CMA-ES or GLPSO
++
++**Do NOT allow the Task Agent to stay in the same algorithm family for more than 2 consecutive generations.** The Task Agent's patch MUST change the core algorithm class or introduce a fundamentally new search mechanism (e.g., covariance matrix adaptation, archive-based success-history adaptation, comprehensive learning) with at least 50-100 lines of new code.
++
++### VERIFYING THE TASK AGENT ACTUALLY CHANGED THE ALGORITHM
++After the Task Agent produces a patch, verify:
++- [ ] The patch changes ec_algorithm.py substantially (not just parameter values)
++- [ ] The patch introduces a new algorithm mechanism (e.g., CMA-ES covariance update, SHADE success-history memory, JADE archive, GLPSO comprehensive learning)
++- [ ] The interface to dqn_de_util.py is preserved (DEOptimizer class, __init__ signature, optimize signature)
++- [ ] The code was actually tested and runs without errors
++
++If the Task Agent only tweaked parameters again, provide negative feedback in your message and explicitly demand an algorithm replacement.
++
+ 4. **Actually modify the code** - not just describe changes
+ 
+ 5. **INCREMENTAL IMPROVEMENT STRATEGY** - VERY IMPORTANT:
+diff --git a/task_agent.py b/task_agent.py
+index 0b1c2f7..a7bbaa2 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -33,6 +33,42 @@ Task input:
+ {inputs}
+ ```
+ 
++## CRITICAL TASK AGENT GUIDANCE
++
++You are an expert optimization algorithm researcher. You MUST modify the evolutionary algorithm code in /hada/metabbo/ec_algorithm.py and/or /hada/metabbo/param_controller.py to improve performance.
++
++### MANDATORY: TRY DIFFERENT ALGORITHMS
++Do NOT just tweak parameters of the current DE. If the score has plateaued, you MUST replace the core algorithm with a fundamentally different one. For bbob_unconstrained, consider implementing:
++- CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
++- SHADE (Success-History based Adaptive DE)
++- JADE (Adaptive DE with optional external archive)
++- GLPSO (Comprehensive Learning PSO)
++- ES (Evolution Strategy with covariance adaptation)
++
++### INTERFACE COMPATIBILITY (CRITICAL - DO NOT BREAK EVAL)
++The file /hada/domains/bbob_unconstrained/dqn_de_util.py imports your module and calls:
++- `ec_mod.DEOptimizer(dim, lower_bounds, upper_bounds, max_evals, params={'F': 0.5, 'CR': 0.5}, controller=controller, recorder=None, swarm_size=40)`
++- `de_opt.optimize(problem, train=(mode == 'train'), seed=seed)`
++- Then reads `stats.get('gbest_f')` and `stats.get('initial_gbest_f')`.
++
++Therefore you MUST keep the class name `DEOptimizer`, its __init__ signature, and its optimize() method signature exactly as they are. You can completely change the internals (e.g., implement CMA-ES inside DEOptimizer) but the interface must remain compatible.
++
++### CODE VERIFICATION CHECKLIST (BEFORE FINISHING)
++- [ ] Read /hada/domains/bbob_unconstrained/dqn_de_util.py to understand how your code is called
++- [ ] All method/function calls reference existing code
++- [ ] No undefined variables or methods
++- [ ] Function signatures match their callers
++- [ ] Run a quick test to verify the optimizer works
++- [ ] Changes are incremental and don't break existing functionality
++
++### HOW TO PROCEED
++1. First, READ the current /hada/metabbo/ec_algorithm.py and /hada/metabbo/param_controller.py
++2. READ /hada/domains/bbob_unconstrained/dqn_de_util.py to see how your code is evaluated
++3. Decide on ONE major algorithmic change (e.g., switch from DE to CMA-ES, or add SHADE archive with success-history adaptation)
++4. Use the `editor` tool with command='str_replace' to actually modify ec_algorithm.py and/or param_controller.py
++5. Test your changes with a small Python script before finishing
++6. Return your response in the required JSON format
++
+ Respond in JSON format with the following schema:
+ <json>
+ {{

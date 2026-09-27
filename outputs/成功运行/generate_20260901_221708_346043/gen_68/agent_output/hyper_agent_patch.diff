@@ -1,0 +1,145 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index a3e6681..a901193 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -160,6 +160,12 @@ You MUST ensure the task_agent.py prompt encourages the Task Agent to:
+ 
+ 4. **Your task_agent.py modifications should be targeted**: If the Task Agent keeps modifying the wrong file, update the prompt to say "THE ONLY FILE THAT MATTERS IS /hada/metabbo/ec_algorithm.py". If the Task Agent makes structural changes but with slow Python loops, update the prompt to provide a complete vectorized NumPy implementation template.
+ 
++5. **DETECT SUBTLE NON-VECTORIZED STRUCTURAL CHANGES** - CRITICAL: gen_62 implemented SHADE (good structural change) but used `for i in range(pop_size):` with nested `for j in range(self.dim):` loops for crossover and boundary handling, plus a `for _ in range(100):` rejection loop for F sampling. The score dropped from gen_61 (0.9004) to gen_62 (0.8550). **A structural algorithm change is NOT enough - it must be vectorized with NumPy.** When reading the diff, look for these patterns even if the algorithm is new:
++   - `for j in range(self.dim)` or `for _ in range(100)` inside the optimization loop
++   - `rng.random() < CR` inside a per-gene loop (should be `rng.random((pop_size, dim)) < CR_i[:, None]`)
++   - Per-individual boundary reflection loops instead of whole-array `np.where`/`np.clip`
++   If present, your updated `task_agent.py` prompt MUST include a **MANDATORY VECTORIZED IMPLEMENTATION CHECK** (grep for forbidden patterns) plus a complete copy-paste vectorized NumPy SHADE/JADE template, and explicitly state that per-individual Python loops over dim or rejection loops are FORBIDDEN.
++
+ Your goal is to ensure the Task Agent's prompt clearly communicates that it should try different algorithms, and that the Task Agent actually follows through with algorithm changes rather than just parameter tweaks.
+ 
+ GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code.
+diff --git a/hyper_agent_improvements.md b/hyper_agent_improvements.md
+index 0473722..50a57a9 100644
+--- a/hyper_agent_improvements.md
++++ b/hyper_agent_improvements.md
+@@ -30,3 +30,33 @@
+ ## Rationale
+ - Gen_30 shows the Task Agent is now attempting structural changes (good), but the implementation is not vectorized (bad) and will likely time out or be excessively slow.
+ - The new forbidden-patterns section and copy-paste vectorized template directly address this gap so the next generation can implement a fast, correct JADE/SHADE.
++
++---
++
++## Update for gen_62 analysis (latest generation):
++
++### What Task Agent changed in gen_62
++- Replaced classic DE mutation with SHADE (current-to-pbest/1, success-history memory, external archive).
++- Fixed undefined `np_log`/`np_exp` in param_controller.py by using `np.log`/`np.exp`.
++- Compiled and ran a smoke test successfully.
++
++### Critical problem identified
++Even though gen_62 implemented SHADE, it used **per-individual Python loops** (`for i in range(pop_size):`, `for j in range(self.dim):`) for crossover and boundary handling, plus a `for _ in range(100)` rejection loop for F sampling. This is **too slow** for the full 20D BBOB evaluation set (many problems × instances). The score dropped from gen_61's 0.9004 to gen_62's 0.8550, consistent with slowdown/timeout risk and/or reduced search effectiveness.
++
++### New changes made to task_agent.py this run
++1. **Added Incremental Improvement Strategy** – each run should focus on ONE functional module and stack successful modules over generations.
++2. **Added Exploration Diversity guidance** – if previous generation used SHADE, this generation should try JADE/CMA-ES/L-SHADE or a different meta-learning method rather than re-tuning the same algorithm.
++3. **Hardened the SHADE guide** – explicitly states the per-individual description is conceptual only and MUST be implemented with the vectorized NumPy template; added a detailed warning about gen_62's loop-based SHADE being forbidden.
++4. **Expanded ABSOLUTELY FORBIDDEN PATTERNS** with:
++   - Explicit mention of `for _ in range(100)` rejection loops for F sampling.
++   - A **MANDATORY VECTORIZED IMPLEMENTATION CHECK** bash command that greps for forbidden patterns (`for j in range(self.dim)`, `for _ in range(100)`, `rng.random() < CR`) and fails the submission if any are found.
++   - Clarification that the only acceptable `pop_size` loop is the external `evaluate_problem` evaluation loop.
++
++### Expected impact
++- Future Task Agents will be much less likely to submit loop-based SHADE/JADE that times out.
++- The grep check makes the vectorization requirement verifiable by the agent before it finalizes.
++- Exploration diversity guidance should push the search toward genuinely different algorithms (CMA-ES, JADE, PPO, etc.) instead of re-tuning the same DE/SHADE parameters generation after generation.
++
++### Also updated hyper_agent.py
++- Added a new ANALYSIS GUIDANCE item #5: **DETECT SUBTLE NON-VECTORIZED STRUCTURAL CHANGES** so future Meta Agents recognize when a structural algorithm change (e.g., SHADE) is implemented with per-individual Python loops and still needs to be flagged/rewritten as vectorized NumPy.
++- This makes the Meta Agent itself aware that a new algorithm name in the diff is not sufficient - it must also check for forbidden loop patterns (`for j in range(self.dim)`, `for _ in range(100)`, `rng.random() < CR` in a per-gene loop) and push the Task Agent toward the vectorized template.
+diff --git a/task_agent.py b/task_agent.py
+index 5be8a1f..3edda70 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -74,6 +74,20 @@ So your modified `ec_algorithm.py` MUST still provide:
+ 
+ ## WHAT TO IMPROVE (be aggressive - try completely different algorithms):
+ 
++### 🧠 INCREMENTAL IMPROVEMENT STRATEGY (VERY IMPORTANT)
++- **Each run should focus on ONE functional module at a time** (e.g., only change the evolutionary algorithm OR only change the meta-learning approach OR only change the population structure)
++- **Do NOT change everything at once** - this makes it impossible to identify what works
++- **Every run MUST have a useful, actual code change** - no empty modifications
++- **If you change the EA, focus on getting the core algorithm right first; if you change meta-learning, focus on the controller architecture**
++- If you have already implemented SHADE/JADE in a previous generation and it worked, try a completely DIFFERENT algorithm this time (e.g., CMA-ES) rather than tweaking SHADE parameters again
++
++### 🧭 EXPLORATION DIVERSITY (CRITICAL)
++- **Do NOT limit yourself to the current DE + DQN combination**
++- **Try completely different algorithm combinations**: CMA-ES + PPO, SHADE + Bayesian Opt, NSGA-III + L2O, etc.
++- **Explore different search operators, selection mechanisms, and parameter adaptation strategies**
++- If the previous generation used SHADE, this generation should try JADE or CMA-ES or L-SHADE with linear population size reduction - do NOT just re-tune the same algorithm
++- The controller/meta-learning layer is also a target: try PPO, Bayesian Optimization, or L2O instead of always using DQN
++
+ ### ⚠️ ABSOLUTE REQUIREMENT: YOU MUST REPLACE THE ALGORITHM, NOT JUST TWEAK PARAMETERS
+ The current baseline is a basic Differential Evolution (DE) with fixed F=0.5, CR=0.5. Scores have plateaued because prior attempts only tweaked parameters (w, c1, c2, F, CR). **THIS IS A FAILURE MODE.**
+ You MUST make a **structural change to the core search mechanism**:
+@@ -99,8 +113,8 @@ You can improve dramatically by:
+ - Add local search / hill-climbing as a final refinement
+ - Change population sizing, mutation strategies, crossover schemes
+ 
+-### 🏆 CONCRETE SHADE IMPLEMENTATION GUIDE (use this as a template - DO NOT just tweak F and CR):
+-If implementing **SHADE** (Success-History based Adaptive DE), here is the core algorithm structure to add inside `DEOptimizer.optimize()`:
++### 🏆 CONCRETE SHADE IMPLEMENTATION GUIDE (use this as a conceptual template - DO NOT just tweak F and CR):
++If implementing **SHADE** (Success-History based Adaptive DE), here is the core algorithm structure to add inside `DEOptimizer.optimize()`. **These steps are described conceptually per-individual for clarity, but you MUST implement them with the VECTORIZED NumPy template below - never with per-individual Python loops.**
+ 
+ ```python
+ # SHADE-specific state (initialize before main loop):
+@@ -110,7 +124,7 @@ memory_CR = np.full(memory_size, 0.5)  # MCR
+ memory_idx = 0
+ archive = np.empty((0, self.dim))      # external archive of inferior solutions
+ 
+-# Inside the main loop, for each individual i:
++# Conceptually, per individual i:
+ # 1. Select memory index randomly: r = rng.randint(0, memory_size)
+ # 2. Sample CR_i from gaussian: CR_i = clip(rng.normal(memory_CR[r], 0.1), 0, 1)
+ # 3. Sample F_i from cauchy: F_i = clip(rng.standard_cauchy() * 0.1 + memory_F[r], 0, 1); redraw if F_i <= 0
+@@ -128,6 +142,8 @@ archive = np.empty((0, self.dim))      # external archive of inferior solutions
+ # Make sure every function evaluation still increments `evals` and stops at `self.max_evals`.
+ ```
+ 
++**⚠️ WARNING: gen_62 attempted SHADE but implemented the per-individual steps with `for i in range(pop_size)` + `for j in range(self.dim)` Python loops for crossover and boundary handling, plus a `for _ in range(100)` rejection loop for F. That implementation is FORBIDDEN. Even though it ran on the smoke test, it is too slow for the full 20D BBOB evaluation set. You MUST use the fully vectorized template below.**
++
+ ### 🚀 VECTORIZED SHADE/JADE MUTATION (REQUIRED STYLE - DO THIS, NOT per-individual Python loops):
+ Implement the per-generation trial generation with NumPy array operations, NOT with a `for i in range(n): for j in range(dim):` loop. A fast vectorized template is:
+ 
+@@ -176,6 +192,13 @@ new_pop = trials
+ **Alternatively, implementing JADE is very similar** but uses `current-to-pbest` mutation with a fixed archive and parameter adaptation via `mu_F` and `mu_CR` (not per-individual history). **Whatever you implement, keep the mutation/crossover fully vectorized with NumPy.**
+ 
+ ## ❌ ABSOLUTELY FORBIDDEN PATTERNS (DO NOT DO THESE - THEY CAUSE TIMEOUTS OR FAILURES):
++
++### 🚨 THE #1 KILLER: PER-INDIVIDUAL PYTHON LOOPS OVER POPULATION AND DIMENSION
++**gen_62 STILL implemented SHADE using `for i in range(pop_size):` with nested `for j in range(self.dim):` loops for crossover AND boundary handling. This is an outright FAILURE even though it ran.**
++
++**Even if your per-loop code happens to pass the smoke test on 5D, it can time out on the full 20D evaluation set (multiple problems × instances). The evaluator runs many BBOB problems; even a 2-3× slowdown can cause a total timeout and score ZERO.**
++
++**You are FORBIDDEN from writing ANY of these patterns:**
+ 1. **DO NOT keep the old per-individual Python loop structure**:
+    ```python
+    for i in range(pop_size):
+@@ -190,8 +213,19 @@ new_pop = trials
+    trials = np.clip(trials, lb, ub)
+    ```
+ 3. **DO NOT use `rng.random()` inside a per-gene double loop** - always generate the full random matrix at once with `rng.random((pop_size, dim))`.
+-4. **DO NOT call methods that don't exist** (e.g., `trial_f[i]` before `trial_f` is initialized in the right shape). If you add variables like `trial_f`, `F_i_list`, `CR_i_list`, initialize them as NumPy arrays BEFORE the loop.
+-5. **DO NOT submit without running the mandatory smoke test below.** If it takes >30 seconds, your code is TOO SLOW and must be rewritten with NumPy vectorization.
++4. **DO NOT use a `for _ in range(100):` rejection loop to sample F for each individual** - use `F_i = np.clip(memory_F[mem_idx] + 0.1 * rng.standard_cauchy(pop_size), 0.0, 1.0); F_i[F_i <= 0] = 0.1` in one vectorized line.
++5. **DO NOT call methods that don't exist** (e.g., `trial_f[i]` before `trial_f` is initialized in the right shape). If you add variables like `trial_f`, `F_i_list`, `CR_i_list`, initialize them as NumPy arrays BEFORE the loop.
++6. **DO NOT submit without running the mandatory smoke test below.** If it takes >30 seconds, your code is TOO SLOW and must be rewritten with NumPy vectorization.
++
++### ✅ MANDATORY VECTORIZED IMPLEMENTATION CHECK (RUN BEFORE SUBMITTING)
++Run these commands and ensure they produce NO matches:
++```bash
++cd /hada/metabbo && grep -n "for j in range(self.dim)" ec_algorithm.py; grep -n "for _ in range(100)" ec_algorithm.py; grep -n "rng.random() < CR" ec_algorithm.py; echo "CHECK DONE"
++```
++
++**If any of those forbidden patterns is found, you MUST rewrite the mutation/crossover/boundary-handling using the vectorized template below. Do NOT submit loop-based code, even if it currently passes.**
++
++**Important:** A `for i in range(pop_size):` loop is acceptable ONLY if it contains just the external `evaluate_problem` call and selection logic (that cannot be vectorized). If a `for i` loop contains any per-dimension `for j` loop, per-individual F/CR rejection loop (`for _ in range(100)`), or per-gene `rng.random() < CR` crossover, it is FORBIDDEN and must be rewritten with the NumPy vectorized template below.
+ 
+ ## ✅ A COMPLETE, VECTORIZED JADE/SHADE-STYLE `optimize()` BODY (COPY THIS AS YOUR BASE):
+ Replace the inner per-generation mutation/selection portion of `DEOptimizer.optimize()` with this fully vectorized pattern. This is known to run fast on 20D, 2000 evals, population 40:

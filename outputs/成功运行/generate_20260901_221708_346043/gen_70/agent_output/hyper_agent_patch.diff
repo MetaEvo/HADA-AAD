@@ -1,0 +1,13 @@
+diff --git a/task_agent.py b/task_agent.py
+index 9ab022e..550fc5d 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -179,7 +179,7 @@ A structurally upgraded algorithm that is too slow will cause the evaluation to
+ - Keep archive operations cheap (simple append/truncate, not full scans).
+ - **MANDATORY smoke test before finishing**: run a quick 20D sphere test with 2000 evals and ensure it completes in <30 seconds.
+ 
+-## VECTORIZED IMPLEMENTATION PATTERN (USE THIS TO AVOID TIMEOUTS)
++## VECTORIZED IMPLEMENTATION PATTERN (MANDATORY - READ THIS OR YOU WILL TIME OUT)
+ 
+ If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate all mutant vectors as a NumPy array:
+ 

@@ -1,0 +1,113 @@
+diff --git a/hyper_agent.py b/hyper_agent.py
+index 472924c..a446c33 100644
+--- a/hyper_agent.py
++++ b/hyper_agent.py
+@@ -64,6 +64,22 @@ The task_agent.py now has a comprehensive built-in instruction that:
+ 3. **Points to the correct file** `/hada/metabbo/ec_algorithm.py` (not stale pso.py)
+ 4. **Provides the exact caller contract** from `dqn_de_util.py` so the agent knows the interface it must preserve
+ 5. **Includes a verification checklist** for code correctness
++6. **Includes FORBIDDEN FILES section** listing protected files (task_agent.py, hyper_agent.py, domains/, agent/, utils/, config.py, generate_loop.py, harness.py, report.py)
++7. **Includes PERFORMANCE / TIMEOUT WARNING** - mandates vectorized NumPy operations and a smoke test
++8. **Includes VECTORIZED IMPLEMENTATION PATTERN** code template to prevent slow Python loops
++
++## REQUIRED ACTIONS FOR THIS META-AGENT RUN (MANDATORY - DO NOT SKIP):
++1. **Find the latest generation**: The previous generation results are under `{eval_path}/`. List that directory to identify the highest `gen_N` folder.
++2. **Read the diff**: Use `editor` view on `{eval_path}/gen_N/<domain>_eval/agent_evals/all_patch.diff` (use the domain relevant to this run, e.g., `bbob_unconstrained`) to see exactly what the Task Agent changed.
++3. **Read the chat history**: Use `editor` view on `{eval_path}/gen_N/<domain>_eval/agent_evals/chat_history_task_agent.md` to check whether the Task Agent actually used the `editor` tool.
++4. **If the diff only has parameter tweaks, constant changes, or is empty**: Your updated `task_agent.py` prompt MUST be even more forceful about requiring structural algorithm replacement.
++5. **If evaluations failed**: Read `{eval_path}/gen_N/generate.log` for error messages, then update the `task_agent.py` prompt to explicitly warn against those exact failure modes (e.g., "do NOT call a method before defining it").
++6. **Always modify at least one of task_agent.py or hyper_agent.py** using `editor` with `command='str_replace'` - never just describe changes.
++7. **After making changes, write a short summary of what you changed and why to `/hada/hyper_agent_improvements.md`** (create the file with editor `create` if it does not exist, or `str_replace` to update).
++8. **Ensure the task_agent.py prompt includes ALL of the following sections (add them if missing):**
++   - **FORBIDDEN FILES** - explicitly list protected files the Task Agent must not edit (task_agent.py, hyper_agent.py, domains/, agent/, utils/, config.py, generate_loop.py, harness.py, report.py)
++   - **PERFORMANCE / TIMEOUT WARNING** - warn that slow implementations score ZERO, mandate NumPy vectorized operations, and require a smoke test (20D sphere, 2000 evals, <30s)
++   - **VECTORIZED IMPLEMENTATION PATTERN** - provide a concrete NumPy vectorized current-to-pbest/1 mutation code template to prevent the Task Agent from writing slow Python loops
+ 
+ Your job is to:
+ - **Verify the task agent actually follows through** with structural changes by checking the all_patch.diff
+diff --git a/task_agent.py b/task_agent.py
+index d623266..942b0ce 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -44,12 +44,20 @@ Previous agents have ONLY made small parameter tweaks (changing F, CR, w, c1, c2
+ - ❌ Fixing log/exp names
+ - ❌ Adding boundary handling tweaks
+ 
++### CURRENT STATE AWARENESS (IMPORTANT - READ THIS FIRST)
++The codebase has ALREADY been upgraded to a JADE/SHADE-style adaptive DE (external archive, current-to-pbest/1 mutation, success-history memory for F/CR).
++**Simply re-implementing JADE/current-to-pbest/1 is NOT enough anymore.** You MUST go one step further to a fundamentally different or more advanced algorithm.
++
+ ### YOU MUST DO ONE OF THE FOLLOWING (change the actual search operator):
+-1. **JADE**: Replace mutation with `current-to-pbest/1` using an archive, adapt F/CR per-individual via Cauchy/Normal sampling with Lehmer mean updates.
+-2. **L-SHADE**: Add `current-to-pbest/1` mutation with archive + Linear Population Size Reduction (LPSR).
+-3. **CMA-ES**: Add a new `CMAESOptimizer` class and alias `DEOptimizer = CMAESOptimizer` at the bottom so the caller still works.
+-4. **DE/current-to-pbest/1 with archive** (JADE-lite): minimal but structural - changes the actual mutation operator.
+-5. **Any other structurally different algorithm**: e.g., best/2 mutation, exponential crossover, (mu+lambda) selection, GLPSO, SHADE, etc.
++1. **L-SHADE**: Add `current-to-pbest/1` mutation with archive + **Linear Population Size Reduction (LPSR)** - this is a structural addition over the current JADE. Reduce population size linearly over the run and resize arrays accordingly.
++2. **CMA-ES**: Add a new `CMAESOptimizer` class and alias `DEOptimizer = CMAESOptimizer` at the bottom so the caller still works. CMA-ES uses a completely different search mechanism (covariance matrix adaptation, no crossover).
++3. **SHADE with success-history memory + sinusoidal or ensemble parameter adaptation**: Modify the memory update mechanism to use weighted Lehmer means with success weights, or add ensemble mutation strategies (SaNSDE-style).
++4. **Completely different optimizer**: e.g., GLPSO, best/2 mutation with exponential crossover, (mu+lambda) evolution strategy with self-adaptation, or a hybrid DE + local search (Nelder-Mead) refinement.
++5. **Population diversity mechanisms beyond archive**: e.g., restart with population size reduction, niching, or migration between subpopulations.
++
++**IMPORTANT**: Avoid per-individual Python loops. In a previous generation, a JADE implementation used `for i in range(pop_size)` with inner `for j in range(dim)` loops and caused severe slowdowns. Use the vectorized pattern below instead.
++
++### YOUR CHANGE WILL BE REJECTED IF YOU ONLY DO ANY OF THESE:
+ 
+ **What counts as "changing the search operator"?**
+ - Different mutation strategy (e.g., current-to-pbest/1, best/2, current-to-rand/1)
+@@ -59,7 +67,16 @@ Previous agents have ONLY made small parameter tweaks (changing F, CR, w, c1, c2
+ 
+ ## FILE TO MODIFY
+ - **PRIMARY**: `/hada/metabbo/ec_algorithm.py` - this is the ONLY file you should modify for algorithm changes.
+-- Do NOT modify `/hada/domains/` (protected) or `/hada/config.py` (protected).
++- You MAY also modify `/hada/metabbo/param_controller.py`, `/hada/metabbo/meta_learning.py`, etc.
++
++## ⛔ FORBIDDEN FILES (DO NOT TOUCH - WILL CAUSE REJECTION)
++You are FORBIDDEN from modifying any of these files:
++- `/hada/task_agent.py`
++- `/hada/hyper_agent.py`
++- Any file in `/hada/domains/`, `/hada/agent/`, `/hada/utils/`
++- `/hada/config.py`, `/hada/generate_loop.py`, `/hada/harness.py`, `/hada/report.py`
++
++If you catch yourself editing any of these files, STOP and revert. Your ONLY target is `/hada/metabbo/ec_algorithm.py`.
+ 
+ ## BEFORE CODING - READ THESE:
+ 1. Open `/hada/domains/{domain}/dqn_de_util.py` to see EXACTLY how your optimizer is called:
+@@ -97,6 +114,37 @@ Example:
+ }}
+ </json>
+ 
++## PERFORMANCE / TIMEOUT WARNING (CRITICAL - A TIMEOUT SCORES ZERO)
++A structurally upgraded algorithm that is too slow will cause the evaluation to time out and score ZERO. **Fast code is as important as correct code.**
++
++- **MUST use NumPy vectorized operations** for mutation, crossover, and selection. Do NOT write per-gene Python `for` loops over the population and dimension (e.g., `for i in range(pop_size): for j in range(dim):` is too slow for 20D+).
++- Avoid expensive per-iteration operations like `np.linalg.eig` inside the main loop, full pairwise distance matrices, or sorting the entire population more than once per generation.
++- Keep archive operations cheap (simple append/truncate, not full scans).
++- **MANDATORY smoke test before finishing**: run a quick 20D sphere test with 2000 evals and ensure it completes in <30 seconds.
++
++## VECTORIZED IMPLEMENTATION PATTERN (USE THIS TO AVOID TIMEOUTS)
++If implementing JADE/SHADE-style mutation, DO NOT write per-individual Python loops. Instead, generate all mutant vectors as a NumPy array:
++
++```python
++# Vectorized current-to-pbest/1 mutation for the whole population:
++sorted_idx = np.argsort(fitness)
++pbest_indices = sorted_idx[rng.randint(0, max(1, int(pop_size * p)), size=pop_size)]
++r1 = rng.randint(0, pop_size, size=pop_size)
++r2 = rng.randint(0, pop_size + len(archive), size=pop_size)
++r2_archive = r2 >= pop_size
++x_r2 = np.where(r2_archive, archive[r2 - pop_size], pop[r2])  # if archive is a 2D array
++F_i = np.clip(mu_F + 0.1 * rng.standard_cauchy(pop_size), 0.1, 1.0)
++CR_i = np.clip(mu_CR + 0.1 * rng.randn(pop_size), 0.0, 1.0)
++mutants = pop + F_i[:, None] * (pop[pbest_indices] - pop) + F_i[:, None] * (pop[r1] - x_r2)
++mask = rng.rand(pop_size, self.dim) < CR_i[:, None]
++j_rand = rng.randint(0, self.dim, size=pop_size)
++mask[np.arange(pop_size), j_rand] = True
++trials = np.where(mask, mutants, pop)
++# then evaluate trials and do selection (still vectorizable)
++```
++
++This pattern runs in milliseconds even for 20D, while per-individual Python loops can take >120 seconds.
++
+ ## VERIFICATION CHECKLIST BEFORE YOU FINISH:
+ - [ ] All method/function calls reference existing code
+ - [ ] No undefined variables or methods

@@ -1,0 +1,179 @@
+diff --git a/metabbo/ec_algorithm.py b/metabbo/ec_algorithm.py
+index e50c8cc..0227cd2 100644
+--- a/metabbo/ec_algorithm.py
++++ b/metabbo/ec_algorithm.py
+@@ -188,6 +188,7 @@ class DEOptimizer:
+             new_pop = np.copy(pop)
+             S_F = []
+             S_CR = []
++            S_delta = []
+             F_i_values = np.zeros(pop_size)
+             CR_i_values = np.zeros(pop_size)
+             
+@@ -254,6 +255,7 @@ class DEOptimizer:
+                 evals += 1
+                 
+                 if trial_f < fitness[i]:
++                    old_fitness_i = float(fitness[i])
+                     # Add previous position to archive before replacement
+                     old_x = pop_old[i].reshape(1, -1)
+                     if len(archive) < archive_capacity:
+@@ -266,20 +268,30 @@ class DEOptimizer:
+                     fitness[i] = trial_f
+                     S_F.append(F_i_values[i])
+                     S_CR.append(CR_i_values[i])
++                    S_delta.append(abs(float(trial_f) - old_fitness_i) + abs(old_fitness_i) * 1e-12)
+                     if trial_f < gbest_f:
+                         gbest_f = trial_f
+                         gbest = new_pop[i].copy()
+             
+-            # Update SHADE memory with successful parameters (weighted Lehmer mean for F)
++            # Update SHADE memory with successful parameters
++            # Use improvement-weighted Lehmer mean (iL-SHADE) for F,
++            # and improvement-weighted mean for CR, to favor parameters
++            # that produced larger fitness improvements.
+             if len(S_F) > 0:
+                 S_F_arr = np.asarray(S_F, dtype=float)
+                 S_CR_arr = np.asarray(S_CR, dtype=float)
+-                sum_F = float(np.sum(S_F_arr))
+-                if sum_F > 0:
+-                    memory_F[memory_idx] = float(np.sum(S_F_arr * S_F_arr) / sum_F)
++                S_delta_arr = np.asarray(S_delta, dtype=float)
++                delta_sum = float(np.sum(S_delta_arr))
++                if delta_sum > 0:
++                    w = S_delta_arr / delta_sum
++                    # Weighted Lehmer mean for F
++                    mem_F = float(np.sum(w * S_F_arr * S_F_arr) / np.sum(w * S_F_arr)) if np.sum(w * S_F_arr) > 0 else float(np.sum(w * S_F_arr))
++                    memory_F[memory_idx] = max(0.1, min(1.0, mem_F))
++                    memory_CR[memory_idx] = float(np.sum(w * S_CR_arr))
+                 else:
+-                    memory_F[memory_idx] = float(np.mean(S_F_arr))
+-                memory_CR[memory_idx] = float(np.mean(S_CR_arr))
++                    sum_F = float(np.sum(S_F_arr))
++                    memory_F[memory_idx] = float(np.sum(S_F_arr * S_F_arr) / sum_F) if sum_F > 0 else float(np.mean(S_F_arr))
++                    memory_CR[memory_idx] = float(np.mean(S_CR_arr))
+                 memory_idx = (memory_idx + 1) % memory_size
+ 
+             # Local search around the current best solution to accelerate convergence
+@@ -325,8 +337,14 @@ class DEOptimizer:
+                         gbest = pop[idx].copy()
+                 stagnation_count = 0
+             
+-            # Compute reward: 1 if improved, 0 otherwise
+-            improved = 1.0 if gbest_f < prev_gbest_f else 0.0
++            # Compute shaped reward: proportional to relative improvement.
++            # This gives the meta-controller a smoother learning signal than
++            # the original binary reward (1 if improved, 0 otherwise).
++            if gbest_f < prev_gbest_f:
++                improvement = (prev_gbest_f - gbest_f) / max(1e-12, abs(initial_gbest_f))
++                improved = float(min(1.0, abs(improvement)))
++            else:
++                improved = 0.0
+             
+             # Store transition in controller's replay buffer
+             if self.controller is not None and train:
+diff --git a/metabbo/param_controller.py b/metabbo/param_controller.py
+index 0422f8e..199924c 100644
+--- a/metabbo/param_controller.py
++++ b/metabbo/param_controller.py
+@@ -148,4 +148,63 @@ class AdaptiveDEController(ParamController):
+         # Increase pbest exploitation pressure as the run progresses
+         pbest_p = max(0.05, 0.2 * (1.0 - t))
+         return {'F': float(F), 'CR': float(CR), 'strategy': strategy,
+-                'epsilon': float(epsilon), 'pbest_p': pbest_p}
+\ No newline at end of file
++                'epsilon': float(epsilon), 'pbest_p': pbest_p}
++
++
++class EnhancedSHADEController(ParamController):
++    """A more aggressive, dimension-aware SHADE/L-SHADE controller.
++
++    Compared to `AdaptiveDEController`, this controller:
++    - Keeps F higher for longer, which is helpful for high-dimensional
++      problems where larger mutation steps accelerate exploration.
++    - Uses a faster CR decay, preserving useful building blocks sooner.
++    - Adapts the elite fraction `pbest_p` non-linearly, allowing strong
++      exploitation near the end of the budget.
++    - Reacts immediately to stagnation by boosting both F and CR.
++    """
++    def __init__(self, min_F=0.25, max_F=1.0, min_CR=0.2, max_CR=1.0,
++                 stagnation_boost=0.25, stagnation_patience=4):
++        self.min_F = min_F
++        self.max_F = max_F
++        self.min_CR = min_CR
++        self.max_CR = max_CR
++        self.stagnation_boost = stagnation_boost
++        self.stagnation_patience = stagnation_patience
++
++    def reset(self, problem_meta: Dict[str, Any]) -> None:
++        self.it = 0
++        self.last_gbest = None
++        self.stagnation_count = 0
++        self.dim = int(problem_meta.get('dim', 10))
++
++    def step(self, observation: Dict[str, Any]) -> Dict[str, float]:
++        self.it = observation.get('iteration', self.it + 1)
++        max_evals = float(observation.get('max_evals', 10000))
++        evals = float(observation.get('evals', 0))
++        t = min(1.0, evals / max(1.0, max_evals))
++
++        # Dimension-aware exploration: larger dimension needs higher F longer.
++        dim_factor = min(1.5, 0.8 + 0.02 * self.dim)
++        F = self.max_F - (self.max_F - self.min_F) * (t ** (1.6 / dim_factor))
++
++        # Faster CR decay to exploit good schemata earlier.
++        CR = self.max_CR - (self.max_CR - self.min_CR) * (t ** 1.2)
++
++        # Stagnation detection and reactive boost.
++        current = observation.get('gbest_f', None)
++        if current is not None and self.last_gbest is not None:
++            if current < self.last_gbest - 1e-12:
++                self.stagnation_count = 0
++            else:
++                self.stagnation_count += 1
++        self.last_gbest = current
++        if self.stagnation_count >= self.stagnation_patience:
++            F = min(self.max_F, F + self.stagnation_boost)
++            CR = min(self.max_CR, CR + self.stagnation_boost)
++            self.stagnation_count = 0
++
++        # Strong elite exploitation late in the run.
++        pbest_p = 0.4 * (1.0 - t) ** 1.5 + 0.02
++
++        return {'F': float(F), 'CR': float(CR), 'pbest_p': float(pbest_p),
++                'strategy': 'jade' if t > 0.25 else 'rand/1'}
+\ No newline at end of file
+diff --git a/task_agent.py b/task_agent.py
+index 88e7e8f..89943ab 100644
+--- a/task_agent.py
++++ b/task_agent.py
+@@ -53,8 +53,19 @@ The gen_11 L-SHADE included these critical components:
+ 7. **Weighted mean for CR update** - uses delta-fitness weights
+ 8. **Controller optionally supplies pbest_p** - but the algorithm also adapts it internally
+ 
++## 🚨 ABSOLUTE TOP PRIORITY: YOU MUST MAKE STRUCTURAL CHANGES - NOT PARAMETER TWEAKS
++Analysis of many generations shows that Task Agents consistently only tweak numeric parameters (w, c1, c2, F, CR) and NEVER replace the algorithm. **This has caused scores to plateau.**
++
++**You MUST do at least ONE of the following structural changes this generation:**
++1. **Replace the entire search algorithm** - e.g., if current is PSO, replace with DE/SHADE/JADE/CMA-ES. If current is DE/JADE, upgrade to L-SHADE (add LPSR + stagnation restart + weighted Lehmer mean) OR replace with CMA-ES entirely.
++2. **Add a major new mechanism** that is not present: linear population size reduction, stagnation restart, external archive, success-history memory, pbest mutation, Cauchy mutation, etc.
++3. **Change the population structure** (e.g., multi-population, island model, restart strategy).
++4. **Change the selection/update logic** (e.g., greedy selection, tournament, feasibility rules for constrained).
++
++**If your planned change is ONLY adjusting numeric values (F, CR, w, c1, c2, pop_size), DO NOT DO IT. It will be considered a failure.**
++
+ ## CURRENT STATE OF ec_algorithm.py (WHAT TO IMPROVE ON):
+-The current file already has a **partial JADE implementation** with archive and current-to-pbest/1, but it is **MISSING several key L-SHADE components** that the gen_11 winner used:
++The current file likely has a **partial JADE implementation** with archive and current-to-pbest/1, but it is **MISSING several key L-SHADE components** that the gen_11 winner used:
+ - ❌ **NO Linear Population Size Reduction (LPSR)** - the population stays at fixed size the whole run. This was important in gen_11.
+ - ❌ **NO stagnation restart** - when the population converges, there is no mechanism to reinitialize worst individuals near the best. This was in gen_11.
+ - ✅ HAS external archive (JADE-style)
+@@ -63,7 +74,7 @@ The current file already has a **partial JADE implementation** with archive and
+ - ❌ Memory update uses simple weighted mean, NOT the **weighted Lehmer mean** (which gen_11 used for F)
+ - ✅ Controller observation includes pop_size hint
+ 
+-**YOUR JOB: Upgrade the current JADE implementation to L-SHADE by adding the missing components from gen_11's winning implementation.**
++**YOUR PRIMARY JOB: Either (A) upgrade the current JADE to full L-SHADE by adding LPSR, stagnation restart, and weighted Lehmer mean, OR (B) replace the algorithm entirely with a different one (CMA-ES, SHADE, jDE, etc.). DO NOT just tweak parameter values.**
+ 
+ ## FILES YOU ARE ALLOWED TO MODIFY:
+ 1. `/hada/metabbo/ec_algorithm.py` - The main evolutionary algorithm (MOST IMPORTANT)
