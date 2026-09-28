@@ -17,3 +17,6 @@ proofgrader_repo/# Environment
 .env
 venv/
 __pycache__/
+
+# Output files
+outputs/

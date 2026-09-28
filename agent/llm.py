@@ -166,7 +166,7 @@ def get_response_from_llm(
         ]
         
         return response_text, new_msg_history, {}
-    elif model.startswith("deepseek-v4") or model.startswith("deepseek/deepseek-"):
+    elif model.startswith("deepseek-flash") or model.startswith("deepseek-v4") or model.startswith("deepseek/deepseek-"):
         # DeepSeek models - use OpenAI SDK directly (bypass LiteLLM)
         deepseek_model_name = model.replace("deepseek/", "")
         client = OpenAI(
