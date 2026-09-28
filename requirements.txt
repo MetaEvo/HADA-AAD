@@ -17,3 +17,5 @@ requests==2.32.4
 setuptools
 wheel
 deap
+--index-url https://download.pytorch.org/whl/cpu
+torch
