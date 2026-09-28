@@ -7,13 +7,25 @@ This repo provides the implementation of HADA (Hyper Algorithm Design Agent). HA
 
 ### 0. Prepare a ubuntu 24.04.4 LTS system
 
-### 1. Build Docker Image
+
+### 1. Prepare your API Key
+Fill in your API Key in the env.txt file and rename it to .env
+
+### 2. Create virtual environment
+
+```bash
+python3 -m venv venv_nat
+source venv_nat/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Build Docker Image
 
 ```bash
 docker build -t hada -f Dockerfile .
 ```
 
-### 2. Initialize Git Repository
+### 4. Initialize Git Repository
 
 ```bash
 git init
@@ -21,7 +33,7 @@ git add .
 git commit -m "Initial commit"
 ```
 
-### 3. Run Initial Evaluation
+### 5. Run Initial Evaluation
 
 Run initial evaluation to establish baseline performance:
 
@@ -37,7 +49,7 @@ bash setup_initial.sh metabox_mo
 An initial evluation output folder will show up in ./outputs/ after the above operation.
 
 
-### 4. Start HADA Generation Loop
+### 6. Start HADA Generation Loop
 
 ```bash
 python generate_loop.py --domains bbob_unconstrained --max_generation 100
