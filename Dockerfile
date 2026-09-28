@@ -44,7 +44,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 安装 CPU 版本的 torch
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
 # 安装 coco-experiment 和 cocopp（BBOB benchmark 的核心依赖）
 RUN pip install --no-cache-dir coco-experiment cocopp
