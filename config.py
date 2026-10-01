@@ -37,7 +37,7 @@ SEED = 42
 # DeepSeek models:
 #   - "deepseek-v4-flash"
 #   - "deepseek-v4-pro"
-MODEL_NAME = "openai/qwen3.8-flash"
+MODEL_NAME = "deepseek-v4-pro"
 
 # =============================================================================
 # Initialization function - Call this at the start of your script
