@@ -217,104 +217,16 @@ def harness(
         sample_row = dataset.iloc[0].to_dict()
         sample_inputs = format_input_dict(sample_row, prev_gen_info=prev_gen_info)
         
-        # 直接在 harness.py 中构建完整的 instruction，像 gen_initial 版本那样
-        from agent.llm_withtools import chat_with_agent
-        from utils.common import extract_jsons
-        
-        # 获取项目根目录的相对路径
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        cocoex_path = os.path.join(project_root, 'metabbo')
-        
-        full_instruction = f"""You are an expert agent specialized in solving tasks within the {sample_inputs['domain']} domain.
-
-Task input:
-```
-{sample_inputs}
-```
-
-⚠️⚠️⚠️ CRITICAL REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY: ⚠️⚠️⚠️
-
-1. **YOU MUST MODIFY CODE FILES** - Use the `editor` tool with command='str_replace' to modify files in `{cocoex_path}/`
-2. **DO NOT JUST VIEW FILES** - You must make ACTUAL CODE CHANGES using str_replace
-3. **MANDATORY MODIFICATIONS** - You MUST modify at least one of these files:
-   - {cocoex_path}/pso.py
-   - {cocoex_path}/dqn_controller.py  
-   - {cocoex_path}/param_controller.py
-
-4. **REQUIRED STEP-BY-STEP PROCESS**:
-   Step 1: Use editor view command to see the current code
-   Step 2: Use editor str_replace command to make improvements (YOU MUST DO THIS)
-   Step 3: Verify your changes were applied
-   Step 4: Respond with JSON
-
-5. **EXAMPLE OF str_replace USAGE**:
-   <json>
-   {{
-       "tool_name": "editor",
-       "tool_input": {{
-           "command": "str_replace",
-           "path": "{cocoex_path}/pso.py",
-           "old_str": "def optimize(self):\\n    # old code here",
-           "new_str": "def optimize(self):\\n    # improved code here"
-       }}
-   }}
-   </json>
-
-6. **CODE CORRECTNESS REQUIREMENTS** (CRITICAL - PREVENTS ZERO SCORE):
-   - **CHECK VARIABLE SCOPE**: Ensure all variables you use are defined in the current scope
-   - **VERIFY INDENTATION**: Python is indentation-sensitive - maintain correct nesting
-   - **INITIALIZE VARIABLES**: If you use new variables (like 'archive', 'f', etc.), initialize them first
-   - **TEST LOGIC FLOW**: Your code should not break the existing PSO loop structure
-   - **AVOID UNDEFINED REFERENCES**: Do NOT reference variables from inner loops in outer scopes
-
-7. **ZERO SCORE WARNINGS**:
-   - If you do NOT call str_replace at least once → ZERO score
-   - If your code has syntax errors or runtime errors → ZERO score
-   - If your code references undefined variables → ZERO score
-
-Your goal is to improve the PSO algorithm's performance on the {domain} problems.
-
-After completing all modifications, you MUST respond in JSON format:
-<json>
-{{
-    "response": "Brief description of the changes made"
-}}
-</json>"""
-        
-        agent.log(f"Calling task agent once to modify code for {domain} domain...")
-        agent.log(f"Task instruction length: {len(full_instruction)} chars")
-        agent.log(f"Enabling multiple tool calls for faster execution...")
+        agent.log(f"Calling task agent forward() to modify code for {domain} domain...")
         agent.log(f"Model: {model}")
         
-        try:
-            new_msg_history = chat_with_agent(
-                full_instruction, 
-                model=model, 
-                msg_history=[], 
-                logging=agent.log, 
-                tools_available='all',
-                multiple_tool_calls=True,  # 启用多工具调用，减少往返次数
-                require_tool='str_replace'  # 强制要求调用 str_replace
-            )
-            agent.log(f"Task agent chat completed, {len(new_msg_history)} messages")
-        except Exception as e:
-            agent.log(f"ERROR in chat_with_agent: {e}")
-            import traceback
-            agent.log(traceback.format_exc())
-            new_msg_history = [{"role": "assistant", "text": "Error during task agent execution"}]
+        # 直接调用 TaskAgent.forward()，让 HyperAgent 对 task_agent.py 的修改生效
+        prediction, new_msg_history = agent.forward(sample_inputs)
         
-        # 提取 prediction
-        prediction = "None"
-        try:
-            extracted_jsons = extract_jsons(new_msg_history[-1]['text'])
-            if extracted_jsons is not None and "response" in extracted_jsons[-1]:
-                prediction = extracted_jsons[-1]["response"]
-        except Exception as e:
-            agent.log(f"Error extracting prediction: {e}")
-            prediction = "None"
+        agent.log(f"Task agent forward completed, {len(new_msg_history)} messages")
+        agent.log(f"Task agent completed. Prediction: {prediction}")
         
         # 保存 chat history
-        import json
         with open(chat_history_path, 'w') as f:
             json.dump(new_msg_history, f, indent=2)
         
@@ -337,8 +249,6 @@ After completing all modifications, you MUST respond in JSON format:
                 agent.log("No changes detected by git diff, saved empty patch")
         except Exception as e:
             agent.log(f"Error generating patch: {e}")
-        
-        agent.log(f"Task agent completed. Prediction: {prediction}")
         
         # 分离训练集和测试集
         agent.log(f"Dataset columns: {dataset.columns.tolist()}")
@@ -608,7 +518,6 @@ After completing all modifications, you MUST respond in JSON format:
         agent.log(f"Final predictions (5-seed average) saved to {output_path}")
         
         # 保存详细的多种子报告
-        import json
         multi_seed_report = {
             'overall_mean_score': float(overall_mean),
             'overall_std_score': float(overall_std),

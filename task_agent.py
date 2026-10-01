@@ -39,7 +39,16 @@ Respond in JSON format with the following schema:
     "response": ...
 }}
 </json>"""
-        new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all')
+        new_msg_history = chat_with_agent(
+            instruction,
+            model=self.model,
+            msg_history=[],
+            logging=self.log,
+            tools_available='all',
+            multiple_tool_calls=True,
+            max_tool_calls=100,
+            require_tool='str_replace',
+        )
 
         # Extract the response
         prediction = "None"

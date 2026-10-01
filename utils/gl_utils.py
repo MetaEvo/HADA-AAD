@@ -491,7 +491,11 @@ def is_patch_already_applied(container, patch_content, repo_name=REPO_NAME):
         # Clean up test file
         container.exec_run(f"rm /{repo_name}/test_patch.txt", workdir=f"/{repo_name}")
         
-        # If dry-run succeeds without "Reversed patch" warning, patch is not applied
+        # If dry-run succeeds (exit_code == 0), patch is NOT applied yet → return False
+        # If dry-run fails (exit_code != 0), patch is already applied or conflicts → return True
+        if exec_result.exit_code == 0:
+            return False
+        # Patch failed to apply - check if it's because it's already applied
         output = exec_result.output.decode().lower() if exec_result.output else ""
         return "reversed patch" in output or "previously applied" in output
         

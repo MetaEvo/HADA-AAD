@@ -191,11 +191,20 @@ def chat_with_agent(
             # Check if required tool was called - if not, force continuation
             if require_tool and require_tool not in tools_called and not tool_uses:
                 logging(f"Warning: Required tool '{require_tool}' not called yet. Forcing continuation.")
-                tool_msgs_str = f"\n\n⚠️ You have NOT used the '{require_tool}' tool yet. You MUST use it before responding with final JSON."
+                tool_msgs_str = f"\n\n⚠️ CRITICAL: You have NOT used the '{require_tool}' tool yet. You MUST use it before responding with final JSON. Do NOT just view files - you MUST make actual code changes using str_replace."
                 tool_msgs.append(tool_msgs_str)
                 tool_uses = []  # Force another iteration
                 retry_tool_use = True  # Force loop to continue
                 logging(f"Forcing retry with tool_msgs: {repr(tool_msgs)}")
+
+            # CRITICAL: If required tool was never called and model tries to finish, force continuation
+            if require_tool and require_tool not in tools_called and not tool_uses and not retry_tool_use:
+                # Model is trying to finish without calling required tool - force continuation
+                logging(f"CRITICAL: Required tool '{require_tool}' never called. Forcing model to use it.")
+                tool_msgs_str = f"\n\n⚠️ MANDATORY: You MUST use the '{require_tool}' tool to modify code before finishing. Do NOT respond with final JSON until you have made actual code changes."
+                tool_msgs.append(tool_msgs_str)
+                tool_uses = []  # Force another iteration
+                retry_tool_use = True  # Force loop to continue
 
         # Final check: if required tool was never called, add warning to message history
         if require_tool and require_tool not in tools_called:

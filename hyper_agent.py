@@ -129,4 +129,13 @@ Your goal is to ensure the Task Agent's prompt clearly communicates that it shou
 GOAL: Improve the task_agent.py prompt/logic so Task Agent makes better modifications to the evolutionary algorithm and meta-learning code.
 """
 
-        new_msg_history = chat_with_agent(instruction, model=self.model, msg_history=[], logging=self.log, tools_available='all', require_tool='str_replace')
+        new_msg_history = chat_with_agent(
+            instruction, 
+            model=self.model, 
+            msg_history=[], 
+            logging=self.log, 
+            tools_available='all', 
+            require_tool='str_replace',
+            multiple_tool_calls=True,
+            max_tool_calls=100,
+        )
