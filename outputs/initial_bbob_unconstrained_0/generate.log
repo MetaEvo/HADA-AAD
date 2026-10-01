@@ -1,186 +1,662 @@
-============================================================
-DQN-DE Baseline for BBOB Unconstrained (Seeds 42-46)
-============================================================
-Found 8 training problems, 16 test problems
-Configuration: max_evals=10000, pop_size=40, F=0.5, CR=0.5, sweeps=5
-
-========================================
-Training with seed 42 for 5 sweeps
-========================================
-Found 8 training problems, 16 test problems
-  Training on 8 problems for 5 sweeps...
-    Sweep 1/5: return=550.0000 (from 8 problems, time=8.0s)
-    Sweep 2/5: return=524.0000 (from 8 problems, time=7.7s)
-    Sweep 3/5: return=516.0000 (from 8 problems, time=5.2s)
-    Sweep 4/5: return=553.0000 (from 8 problems, time=7.8s)
-    Sweep 5/5: return=535.0000 (from 8 problems, time=7.8s)
-
-[bbob_unconstrained] DQN Training Loss Array (per update step): 990 values, range=[0.1557, 400.6001]
-[bbob_unconstrained] DQN Return Array (per sweep): [550.0, 524.0, 516.0, 553.0, 535.0]
-[bbob_unconstrained] Return curve saved to /hada/outputs/initial_bbob_unconstrained_0/bbob_unconstrained_return_curves.png
-[bbob_unconstrained] Loss curve saved to /hada/outputs/initial_bbob_unconstrained_0/bbob_unconstrained_loss_curves.png
-  Training completed for seed 42
-
-========================================
-Testing with seed 42
-========================================
-  [DQN-DE] Testing on 16 problems:
-    f3_i1 (f3_i1_d20): score=0.9863, gbest_f=-447.449816, initial=609.333836, opt=-462.090000
-    f4_i1 (f4_i1_d20): score=0.9722, gbest_f=-423.154613, initial=937.723157, opt=-462.090000
-    f6_i1 (f6_i1_d20): score=0.9965, gbest_f=3045.684204, initial=850710.759009, opt=35.900000
-    f7_i1 (f7_i1_d20): score=0.9903, gbest_f=102.653801, initial=1089.687198, opt=92.940000
-    f9_i1 (f9_i1_d20): score=0.9989, gbest_f=248.274254, initial=116777.375539, opt=123.830000
-    f13_i1 (f13_i1_d20): score=0.8877, gbest_f=279.194191, initial=2249.754432, opt=29.970000
-    f14_i1 (f14_i1_d20): score=0.9740, gbest_f=-50.661968, initial=12.666890, opt=-52.350000
-    f16_i1 (f16_i1_d20): score=0.6560, gbest_f=85.851970, initial=113.508201, opt=71.350000
-    f17_i1 (f17_i1_d20): score=0.9776, gbest_f=-16.632486, initial=-3.194257, opt=-16.940000
-    f18_i1 (f18_i1_d20): score=0.9610, gbest_f=-14.070999, initial=56.598654, opt=-16.940000
-    f19_i1 (f19_i1_d20): score=0.8385, gbest_f=-97.104335, initial=-68.823530, opt=-102.550000
-    f20_i1 (f20_i1_d20): score=1.0000, gbest_f=-544.557801, initial=78496.821819, opt=-546.500000
-    f21_i1 (f21_i1_d20): score=0.8806, gbest_f=50.358953, initial=120.972760, opt=40.780000
-    f22_i1 (f22_i1_d20): score=0.9900, gbest_f=-999.212872, initial=-921.493432, opt=-1000.000000
-    f23_i1 (f23_i1_d20): score=0.6803, gbest_f=9.665464, initial=15.614011, opt=6.870000
-    f24_i1 (f24_i1_d20): score=0.6730, gbest_f=284.951178, initial=660.164511, opt=102.610000
-  [DQN-DE] Test Mean Score: 0.9039 +/- 0.1216
-  [DQN-DE] Testing time: 17.5s
-  Seed 42 Summary:
-    [DQN-DE] Mean Score: 0.9039 +/- 0.1216
-    Total time: 17.5s
-
-========================================
-Testing with seed 43
-========================================
-  [DQN-DE] Testing on 16 problems:
-    f3_i1 (f3_i1_d20): score=0.9867, gbest_f=-449.063979, initial=518.978795, opt=-462.090000
-    f4_i1 (f4_i1_d20): score=0.9892, gbest_f=-441.949218, initial=1408.670989, opt=-462.090000
-    f6_i1 (f6_i1_d20): score=0.8866, gbest_f=109863.040383, initial=968485.732132, opt=35.900000
-    f7_i1 (f7_i1_d20): score=0.9530, gbest_f=131.340193, initial=910.134603, opt=92.940000
-    f9_i1 (f9_i1_d20): score=0.9997, gbest_f=146.479925, initial=80902.712182, opt=123.830000
-    f13_i1 (f13_i1_d20): score=0.9045, gbest_f=211.090203, initial=1927.273107, opt=29.970000
-    f14_i1 (f14_i1_d20): score=0.9798, gbest_f=-51.212169, initial=3.880985, opt=-52.350000
-    f16_i1 (f16_i1_d20): score=0.6620, gbest_f=86.012062, initial=114.728819, opt=71.350000
-    f17_i1 (f17_i1_d20): score=0.9857, gbest_f=-16.528465, initial=11.765312, opt=-16.940000
-    f18_i1 (f18_i1_d20): score=0.9359, gbest_f=-9.186461, initial=103.939288, opt=-16.940000
-    f19_i1 (f19_i1_d20): score=0.7644, gbest_f=-96.834983, initial=-78.293460, opt=-102.550000
-    f20_i1 (f20_i1_d20): score=1.0000, gbest_f=-544.876252, initial=67033.324076, opt=-546.500000
-    f21_i1 (f21_i1_d20): score=0.9735, gbest_f=42.905345, initial=120.840170, opt=40.780000
-    f22_i1 (f22_i1_d20): score=0.7596, gbest_f=-980.571785, initial=-919.169101, opt=-1000.000000
-    f23_i1 (f23_i1_d20): score=0.6048, gbest_f=9.514611, initial=13.562622, opt=6.870000
-    f24_i1 (f24_i1_d20): score=0.7440, gbest_f=256.062635, initial=701.960203, opt=102.610000
-  [DQN-DE] Test Mean Score: 0.8831 +/- 0.1276
-  [DQN-DE] Testing time: 9.4s
-  Seed 43 Summary:
-    [DQN-DE] Mean Score: 0.8831 +/- 0.1276
-    Total time: 9.4s
-
-========================================
-Testing with seed 44
-========================================
-  [DQN-DE] Testing on 16 problems:
-    f3_i1 (f3_i1_d20): score=0.9882, gbest_f=-452.912395, initial=317.141187, opt=-462.090000
-    f4_i1 (f4_i1_d20): score=0.9683, gbest_f=-425.794450, initial=681.991664, opt=-462.090000
-    f6_i1 (f6_i1_d20): score=0.9681, gbest_f=17986.246663, initial=562542.436489, opt=35.900000
-    f7_i1 (f7_i1_d20): score=0.9424, gbest_f=146.924779, initial=1030.497281, opt=92.940000
-    f9_i1 (f9_i1_d20): score=0.9994, gbest_f=172.846588, initial=86787.877449, opt=123.830000
-    f13_i1 (f13_i1_d20): score=0.8675, gbest_f=299.174823, initial=2061.133510, opt=29.970000
-    f14_i1 (f14_i1_d20): score=0.9811, gbest_f=-51.090409, initial=14.334482, opt=-52.350000
-    f16_i1 (f16_i1_d20): score=0.3962, gbest_f=96.318324, initial=112.702077, opt=71.350000
-    f17_i1 (f17_i1_d20): score=0.9722, gbest_f=-16.525214, initial=-2.008620, opt=-16.940000
-    f18_i1 (f18_i1_d20): score=0.9198, gbest_f=-11.798593, initial=47.130240, opt=-16.940000
-    f19_i1 (f19_i1_d20): score=0.8164, gbest_f=-97.459584, initial=-74.824895, opt=-102.550000
-    f20_i1 (f20_i1_d20): score=1.0000, gbest_f=-544.496890, initial=53231.905526, opt=-546.500000
-    f21_i1 (f21_i1_d20): score=0.9605, gbest_f=44.034823, initial=123.096492, opt=40.780000
-    f22_i1 (f22_i1_d20): score=0.9748, gbest_f=-997.890822, initial=-916.272997, opt=-1000.000000
-    f23_i1 (f23_i1_d20): score=0.5078, gbest_f=9.036152, initial=11.271281, opt=6.870000
-    f24_i1 (f24_i1_d20): score=0.7379, gbest_f=270.624425, initial=743.548867, opt=102.610000
-  [DQN-DE] Test Mean Score: 0.8750 +/- 0.1754
-  [DQN-DE] Testing time: 12.9s
-  Seed 44 Summary:
-    [DQN-DE] Mean Score: 0.8750 +/- 0.1754
-    Total time: 12.9s
-
-========================================
-Testing with seed 45
-========================================
-  [DQN-DE] Testing on 16 problems:
-    f3_i1 (f3_i1_d20): score=0.9914, gbest_f=-457.097325, initial=121.676999, opt=-462.090000
-    f4_i1 (f4_i1_d20): score=0.9747, gbest_f=-434.067622, initial=647.596520, opt=-462.090000
-    f6_i1 (f6_i1_d20): score=0.8920, gbest_f=63059.283878, initial=583588.969643, opt=35.900000
-    f7_i1 (f7_i1_d20): score=0.9887, gbest_f=104.362184, initial=1099.506394, opt=92.940000
-    f9_i1 (f9_i1_d20): score=0.9989, gbest_f=235.652292, initial=97865.717479, opt=123.830000
-    f13_i1 (f13_i1_d20): score=0.5536, gbest_f=959.083538, initial=2111.151968, opt=29.970000
-    f14_i1 (f14_i1_d20): score=0.9848, gbest_f=-51.816409, initial=-17.169328, opt=-52.350000
-    f16_i1 (f16_i1_d20): score=0.4696, gbest_f=94.058315, initial=114.165764, opt=71.350000
-    f17_i1 (f17_i1_d20): score=0.9707, gbest_f=-16.410013, initial=1.159587, opt=-16.940000
-    f18_i1 (f18_i1_d20): score=0.9686, gbest_f=-14.602532, initial=57.468096, opt=-16.940000
-    f19_i1 (f19_i1_d20): score=0.8082, gbest_f=-97.577915, initial=-76.624632, opt=-102.550000
-    f20_i1 (f20_i1_d20): score=1.0000, gbest_f=-545.626213, initial=79282.812276, opt=-546.500000
-    f21_i1 (f21_i1_d20): score=0.9690, gbest_f=43.295612, initial=122.017812, opt=40.780000
-    f22_i1 (f22_i1_d20): score=0.8102, gbest_f=-984.266037, initial=-917.101043, opt=-1000.000000
-    f23_i1 (f23_i1_d20): score=0.6764, gbest_f=9.025625, initial=13.531540, opt=6.870000
-    f24_i1 (f24_i1_d20): score=0.6810, gbest_f=261.360665, initial=600.256261, opt=102.610000
-  [DQN-DE] Test Mean Score: 0.8586 +/- 0.1687
-  [DQN-DE] Testing time: 14.2s
-  Seed 45 Summary:
-    [DQN-DE] Mean Score: 0.8586 +/- 0.1687
-    Total time: 14.2s
-
-========================================
-Testing with seed 46
-========================================
-  [DQN-DE] Testing on 16 problems:
-    f3_i1 (f3_i1_d20): score=0.9885, gbest_f=-454.036469, initial=237.731800, opt=-462.090000
-    f4_i1 (f4_i1_d20): score=0.9521, gbest_f=-417.047935, initial=478.694471, opt=-462.090000
-    f6_i1 (f6_i1_d20): score=0.9705, gbest_f=19547.087084, initial=662026.943906, opt=35.900000
-    f7_i1 (f7_i1_d20): score=0.9832, gbest_f=116.809205, initial=1511.113045, opt=92.940000
-    f9_i1 (f9_i1_d20): score=0.9993, gbest_f=205.406806, initial=113273.391264, opt=123.830000
-    f13_i1 (f13_i1_d20): score=0.8137, gbest_f=420.127371, initial=2124.109950, opt=29.970000
-    f14_i1 (f14_i1_d20): score=0.9867, gbest_f=-51.877496, initial=-16.735575, opt=-52.350000
-    f16_i1 (f16_i1_d20): score=0.3011, gbest_f=96.086775, initial=106.745165, opt=71.350000
-    f17_i1 (f17_i1_d20): score=0.9647, gbest_f=-16.118559, initial=6.357107, opt=-16.940000
-    f18_i1 (f18_i1_d20): score=0.8401, gbest_f=-5.388605, initial=55.292126, opt=-16.940000
-    f19_i1 (f19_i1_d20): score=0.8006, gbest_f=-97.444716, initial=-76.945038, opt=-102.550000
-    f20_i1 (f20_i1_d20): score=1.0000, gbest_f=-544.308278, initial=60542.471410, opt=-546.500000
-    f21_i1 (f21_i1_d20): score=0.9559, gbest_f=44.041004, initial=114.792688, opt=40.780000
-    f22_i1 (f22_i1_d20): score=0.9739, gbest_f=-997.846365, initial=-917.568854, opt=-1000.000000
-    f23_i1 (f23_i1_d20): score=0.4976, gbest_f=9.093287, initial=11.295437, opt=6.870000
-    f24_i1 (f24_i1_d20): score=0.7934, gbest_f=209.598851, initial=620.347628, opt=102.610000
-  [DQN-DE] Test Mean Score: 0.8638 +/- 0.1928
-  [DQN-DE] Testing time: 11.8s
-  Seed 46 Summary:
-    [DQN-DE] Mean Score: 0.8638 +/- 0.1928
-    Total time: 11.8s
 
 ============================================================
-Overall Results Summary (Seeds 42-46)
+Multi-seed evaluation for bbob_unconstrained
+Training seed: 42
+Test seeds: [42, 43, 44, 45, 46]
+Train problems: 8, Test problems: 16
 ============================================================
-[DQN-DE] Mean Score: 0.8769 +/- 0.0160
 
-Per-seed means: ['0.9039', '0.8831', '0.8750', '0.8586', '0.8638']
-  f3_i1: 0.9882 +/- 0.0018
-  f4_i1: 0.9713 +/- 0.0119
-  f6_i1: 0.9427 +/- 0.0448
-  f7_i1: 0.9715 +/- 0.0198
-  f9_i1: 0.9992 +/- 0.0003
-  f13_i1: 0.8054 +/- 0.1296
-  f14_i1: 0.9813 +/- 0.0044
-  f16_i1: 0.4970 +/- 0.1427
-  f17_i1: 0.9742 +/- 0.0071
-  f18_i1: 0.9251 +/- 0.0459
-  f19_i1: 0.8056 +/- 0.0242
+========================================
+=== Phase 1: Training on seed 42 ===
+========================================
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f1 Score: 0.9999995456620402
+[TRAIN] f1 gbest_f: 79.48006307819101
+[TRAIN] f1 initial_gbest_f: 218.31539688868355
+[TRAIN] f1 opt_val: 79.48
+[TRAIN] Total DQN loss: 40.398709
+[TRAIN] Total DQN return: 103.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f2 Score: 0.9999999305637335
+[TRAIN] f2 gbest_f: -209.57371545092636
+[TRAIN] f2 initial_gbest_f: 4410807.072702197
+[TRAIN] f2 opt_val: -209.88
+[TRAIN] Total DQN loss: 112.429143
+[TRAIN] Total DQN return: 191.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f5 Score: 0.9999999978721823
+[TRAIN] f5 gbest_f: -9.209999382104954
+[TRAIN] f5 initial_gbest_f: 281.17907793061926
+[TRAIN] f5 opt_val: -9.21
+[TRAIN] Total DQN loss: 190.244947
+[TRAIN] Total DQN return: 294.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f8 Score: 0.9998904278060023
+[TRAIN] f8 gbest_f: 172.95609185187143
+[TRAIN] f8 initial_gbest_f: 217413.1380915835
+[TRAIN] f8 opt_val: 149.15
+[TRAIN] Total DQN loss: 268.401309
+[TRAIN] Total DQN return: 365.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f10 Score: 0.9940223740008856
+[TRAIN] f10 gbest_f: 15107.831433326483
+[TRAIN] f10 initial_gbest_f: 2536532.5674106083
+[TRAIN] f10 opt_val: -54.94
+[TRAIN] Total DQN loss: 342.820527
+[TRAIN] Total DQN return: 397.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f11 Score: 0.9929957341004025
+[TRAIN] f11 gbest_f: 115.27648747038808
+[TRAIN] f11 initial_gbest_f: 5645.231548508487
+[TRAIN] f11 opt_val: 76.27
+[TRAIN] Total DQN loss: 408.455632
+[TRAIN] Total DQN return: 433.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f12 Score: 0.999995214554348
+[TRAIN] f12 gbest_f: 914.703796095473
+[TRAIN] f12 initial_gbest_f: 320933709.3157862
+[TRAIN] f12 opt_val: -621.11
+[TRAIN] Total DQN loss: 484.341252
+[TRAIN] Total DQN return: 521.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f15 Score: 0.8571347032201547
+[TRAIN] f15 gbest_f: 1145.692091362082
+[TRAIN] f15 initial_gbest_f: 2019.7864327163563
+[TRAIN] f15 opt_val: 1000.0
+[TRAIN] Total DQN loss: 549.000526
+[TRAIN] Total DQN return: 550.0000
+  Sweep 1/5: return=7.8440, loss=549.0005 (8 probs)
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f1 Score: 0.9999989044396718
+[TRAIN] f1 gbest_f: 79.480152102553
+[TRAIN] f1 initial_gbest_f: 218.31539688868355
+[TRAIN] f1 opt_val: 79.48
+[TRAIN] Total DQN loss: 53.622065
+[TRAIN] Total DQN return: 86.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f2 Score: 0.9999998007034665
+[TRAIN] f2 gbest_f: -209.00089961158517
+[TRAIN] f2 initial_gbest_f: 4410807.072702197
+[TRAIN] f2 opt_val: -209.88
+[TRAIN] Total DQN loss: 111.782409
+[TRAIN] Total DQN return: 177.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f5 Score: 0.9999999969039973
+[TRAIN] f5 gbest_f: -9.209999100954622
+[TRAIN] f5 initial_gbest_f: 281.17907793061926
+[TRAIN] f5 opt_val: -9.21
+[TRAIN] Total DQN loss: 165.800559
+[TRAIN] Total DQN return: 279.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f8 Score: 0.9996454396355238
+[TRAIN] f8 gbest_f: 226.18319880533005
+[TRAIN] f8 initial_gbest_f: 217413.1380915835
+[TRAIN] f8 opt_val: 149.15
+[TRAIN] Total DQN loss: 234.818210
+[TRAIN] Total DQN return: 349.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f10 Score: 0.9889966148422136
+[TRAIN] f10 gbest_f: 27856.109330468153
+[TRAIN] f10 initial_gbest_f: 2536532.5674106083
+[TRAIN] f10 opt_val: -54.94
+[TRAIN] Total DQN loss: 339.647910
+[TRAIN] Total DQN return: 384.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f11 Score: 0.9930889544014988
+[TRAIN] f11 gbest_f: 114.75734719804231
+[TRAIN] f11 initial_gbest_f: 5645.231548508487
+[TRAIN] f11 opt_val: 76.27
+[TRAIN] Total DQN loss: 450.702435
+[TRAIN] Total DQN return: 405.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f12 Score: 0.9999992939028548
+[TRAIN] f12 gbest_f: -394.49918552376073
+[TRAIN] f12 initial_gbest_f: 320933709.3157862
+[TRAIN] f12 opt_val: -621.11
+[TRAIN] Total DQN loss: 562.484614
+[TRAIN] Total DQN return: 499.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f15 Score: 0.8819415842284836
+[TRAIN] f15 gbest_f: 1120.3943706717791
+[TRAIN] f15 initial_gbest_f: 2019.7864327163563
+[TRAIN] f15 opt_val: 1000.0
+[TRAIN] Total DQN loss: 634.135549
+[TRAIN] Total DQN return: 527.0000
+  Sweep 2/5: return=7.8637, loss=634.1355 (8 probs)
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f1 Score: 0.999994370047916
+[TRAIN] f1 gbest_f: 79.48078163663205
+[TRAIN] f1 initial_gbest_f: 218.31539688868355
+[TRAIN] f1 opt_val: 79.48
+[TRAIN] Total DQN loss: 75.340921
+[TRAIN] Total DQN return: 78.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f2 Score: 0.9999989374059913
+[TRAIN] f2 gbest_f: -205.19287981336356
+[TRAIN] f2 initial_gbest_f: 4410807.072702197
+[TRAIN] f2 opt_val: -209.88
+[TRAIN] Total DQN loss: 183.666473
+[TRAIN] Total DQN return: 157.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f5 Score: 0.9999999905846277
+[TRAIN] f5 gbest_f: -9.209997265878739
+[TRAIN] f5 initial_gbest_f: 281.17907793061926
+[TRAIN] f5 opt_val: -9.21
+[TRAIN] Total DQN loss: 288.999963
+[TRAIN] Total DQN return: 262.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f8 Score: 0.9999007241055157
+[TRAIN] f8 gbest_f: 170.7190767570282
+[TRAIN] f8 initial_gbest_f: 217413.1380915835
+[TRAIN] f8 opt_val: 149.15
+[TRAIN] Total DQN loss: 385.879787
+[TRAIN] Total DQN return: 349.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f10 Score: 0.9959949587766621
+[TRAIN] f10 gbest_f: 10104.197533783452
+[TRAIN] f10 initial_gbest_f: 2536532.5674106083
+[TRAIN] f10 opt_val: -54.94
+[TRAIN] Total DQN loss: 532.737612
+[TRAIN] Total DQN return: 399.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f11 Score: 0.9847064663976091
+[TRAIN] f11 gbest_f: 161.43910057253825
+[TRAIN] f11 initial_gbest_f: 5645.231548508487
+[TRAIN] f11 opt_val: 76.27
+[TRAIN] Total DQN loss: 703.071954
+[TRAIN] Total DQN return: 412.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f12 Score: 0.9999955819238217
+[TRAIN] f12 gbest_f: 796.8023200460958
+[TRAIN] f12 initial_gbest_f: 320933709.3157862
+[TRAIN] f12 opt_val: -621.11
+[TRAIN] Total DQN loss: 903.213496
+[TRAIN] Total DQN return: 501.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f15 Score: 0.9178309864986522
+[TRAIN] f15 gbest_f: 1083.7948451583616
+[TRAIN] f15 initial_gbest_f: 2019.7864327163563
+[TRAIN] f15 opt_val: 1000.0
+[TRAIN] Total DQN loss: 1196.006610
+[TRAIN] Total DQN return: 532.0000
+  Sweep 3/5: return=7.8984, loss=1196.0066 (8 probs)
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f1 Score: 0.9999995873173103
+[TRAIN] f1 gbest_f: 79.48005729496504
+[TRAIN] f1 initial_gbest_f: 218.31539688868355
+[TRAIN] f1 opt_val: 79.48
+[TRAIN] Total DQN loss: 299.281116
+[TRAIN] Total DQN return: 98.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f2 Score: 0.999999956645498
+[TRAIN] f2 gbest_f: -209.68876255675087
+[TRAIN] f2 initial_gbest_f: 4410807.072702197
+[TRAIN] f2 opt_val: -209.88
+[TRAIN] Total DQN loss: 587.530233
+[TRAIN] Total DQN return: 196.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f5 Score: 0.9999999979205052
+[TRAIN] f5 gbest_f: -9.209999396137388
+[TRAIN] f5 initial_gbest_f: 281.17907793061926
+[TRAIN] f5 opt_val: -9.21
+[TRAIN] Total DQN loss: 689.991718
+[TRAIN] Total DQN return: 293.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f8 Score: 0.9995915186754166
+[TRAIN] f8 gbest_f: 237.8982816398963
+[TRAIN] f8 initial_gbest_f: 217413.1380915835
+[TRAIN] f8 opt_val: 149.15
+[TRAIN] Total DQN loss: 944.128229
+[TRAIN] Total DQN return: 356.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f10 Score: 0.9955024793567661
+[TRAIN] f10 gbest_f: 11353.414677948673
+[TRAIN] f10 initial_gbest_f: 2536532.5674106083
+[TRAIN] f10 opt_val: -54.94
+[TRAIN] Total DQN loss: 1685.009714
+[TRAIN] Total DQN return: 394.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f11 Score: 0.9884350189387693
+[TRAIN] f11 gbest_f: 140.67493483922334
+[TRAIN] f11 initial_gbest_f: 5645.231548508487
+[TRAIN] f11 opt_val: 76.27
+[TRAIN] Total DQN loss: 2464.426056
+[TRAIN] Total DQN return: 411.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f12 Score: 0.9999977086491162
+[TRAIN] f12 gbest_f: 114.26316168859898
+[TRAIN] f12 initial_gbest_f: 320933709.3157862
+[TRAIN] f12 opt_val: -621.11
+[TRAIN] Total DQN loss: 3057.970513
+[TRAIN] Total DQN return: 502.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f15 Score: 0.872413227693642
+[TRAIN] f15 gbest_f: 1130.1112593920948
+[TRAIN] f15 initial_gbest_f: 2019.7864327163563
+[TRAIN] f15 opt_val: 1000.0
+[TRAIN] Total DQN loss: 3859.641303
+[TRAIN] Total DQN return: 531.0000
+  Sweep 4/5: return=7.8559, loss=3859.6413 (8 probs)
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f1 Score: 0.9999984469193154
+[TRAIN] f1 gbest_f: 79.48021562257327
+[TRAIN] f1 initial_gbest_f: 218.31539688868355
+[TRAIN] f1 opt_val: 79.48
+[TRAIN] Total DQN loss: 535.398063
+[TRAIN] Total DQN return: 106.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f2 Score: 0.9999999219756505
+[TRAIN] f2 gbest_f: -209.535833271281
+[TRAIN] f2 initial_gbest_f: 4410807.072702197
+[TRAIN] f2 opt_val: -209.88
+[TRAIN] Total DQN loss: 1028.591387
+[TRAIN] Total DQN return: 212.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f5 Score: 0.9999999994808494
+[TRAIN] f5 gbest_f: -9.2099998492443
+[TRAIN] f5 initial_gbest_f: 281.17907793061926
+[TRAIN] f5 opt_val: -9.21
+[TRAIN] Total DQN loss: 1762.888645
+[TRAIN] Total DQN return: 321.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f8 Score: 0.9999140098423427
+[TRAIN] f8 gbest_f: 167.83256458924782
+[TRAIN] f8 initial_gbest_f: 217413.1380915835
+[TRAIN] f8 opt_val: 149.15
+[TRAIN] Total DQN loss: 2621.337713
+[TRAIN] Total DQN return: 422.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f10 Score: 0.9792946455909729
+[TRAIN] f10 gbest_f: 52466.00333044743
+[TRAIN] f10 initial_gbest_f: 2536532.5674106083
+[TRAIN] f10 opt_val: -54.94
+[TRAIN] Total DQN loss: 3140.233841
+[TRAIN] Total DQN return: 455.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f11 Score: 0.9953224599582398
+[TRAIN] f11 gbest_f: 102.31904063417203
+[TRAIN] f11 initial_gbest_f: 5645.231548508487
+[TRAIN] f11 opt_val: 76.27
+[TRAIN] Total DQN loss: 3618.400360
+[TRAIN] Total DQN return: 483.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f12 Score: 0.9999980159953983
+[TRAIN] f12 gbest_f: 15.625188415850744
+[TRAIN] f12 initial_gbest_f: 320933709.3157862
+[TRAIN] f12 opt_val: -621.11
+[TRAIN] Total DQN loss: 4847.743297
+[TRAIN] Total DQN return: 567.0000
+[TRAIN] Model saved to /hada/domains/bbob_unconstrained/../../metabbo/dqn_model.pt
+[TRAIN] f15 Score: 0.9112486363859991
+[TRAIN] f15 gbest_f: 1090.5074364986342
+[TRAIN] f15 initial_gbest_f: 2019.7864327163563
+[TRAIN] f15 opt_val: 1000.0
+[TRAIN] Total DQN loss: 6536.510704
+[TRAIN] Total DQN return: 605.0000
+  Sweep 5/5: return=7.8858, loss=6536.5107 (8 probs)
+
+========================================
+=== Phase 2: Testing on seeds [42, 43, 44, 45, 46] ===
+========================================
+
+--- Testing with seed 42 ---
+[TEST] f3 Score: 0.9859921481154181
+[TEST] f3 gbest_f: -447.0816536059672
+[TEST] f3 initial_gbest_f: 609.3338355526917
+[TEST] f3 opt_val: -462.09
+[TEST] f4 Score: 0.9762260848669749
+[TEST] f4 gbest_f: -428.8109608137044
+[TEST] f4 initial_gbest_f: 937.723156566143
+[TEST] f4 opt_val: -462.09
+[TEST] f6 Score: 0.9999010434616604
+[TEST] f6 gbest_f: 120.07983930003536
+[TEST] f6 initial_gbest_f: 850710.7590085914
+[TEST] f6 opt_val: 35.9
+[TEST] f7 Score: 0.9844538677241705
+[TEST] f7 gbest_f: 108.43556377820356
+[TEST] f7 initial_gbest_f: 1089.6871975197
+[TEST] f7 opt_val: 92.94
+[TEST] f9 Score: 0.9986817104323352
+[TEST] f9 gbest_f: 277.61315211530155
+[TEST] f9 initial_gbest_f: 116777.37553909949
+[TEST] f9 opt_val: 123.83
+[TEST] f13 Score: 0.9197680074954678
+[TEST] f13 gbest_f: 208.06772788401827
+[TEST] f13 initial_gbest_f: 2249.7544316774006
+[TEST] f13 opt_val: 29.97
+[TEST] f14 Score: 0.9570562863511249
+[TEST] f14 gbest_f: -49.55793329377262
+[TEST] f14 initial_gbest_f: 12.666889993642194
+[TEST] f14 opt_val: -52.35
+[TEST] f16 Score: 0.6261155374340497
+[TEST] f16 gbest_f: 87.11229614575882
+[TEST] f16 initial_gbest_f: 113.50820052425547
+[TEST] f16 opt_val: 71.35
+[TEST] f17 Score: 0.9555207425824531
+[TEST] f17 gbest_f: -16.328599565043646
+[TEST] f17 initial_gbest_f: -3.1942571424503896
+[TEST] f17 opt_val: -16.94
+[TEST] f18 Score: 0.9069358225403931
+[TEST] f18 gbest_f: -10.096185694698192
+[TEST] f18 initial_gbest_f: 56.598653562723
+[TEST] f18 opt_val: -16.94
+[TEST] f19 Score: 0.8669564907801602
+[TEST] f19 gbest_f: -98.0629121408342
+[TEST] f19 initial_gbest_f: -68.82353047527197
+[TEST] f19 opt_val: -102.55
+[TEST] f20 Score: 0.9999842088173403
+[TEST] f20 gbest_f: -545.2518124671352
+[TEST] f20 initial_gbest_f: 78496.82181876783
+[TEST] f20 opt_val: -546.5
+[TEST] f21 Score: 0.8157866081657179
+[TEST] f21 gbest_f: 55.55258037638272
+[TEST] f21 initial_gbest_f: 120.97276030524478
+[TEST] f21 opt_val: 40.78
+[TEST] f22 Score: 0.9895290807181762
+[TEST] f22 gbest_f: -999.1779640612838
+[TEST] f22 initial_gbest_f: -921.4934317999013
+[TEST] f22 opt_val: -1000.0
+[TEST] f23 Score: 0.7548014883006552
+[TEST] f23 gbest_f: 9.014018529025435
+[TEST] f23 initial_gbest_f: 15.614011185738217
+[TEST] f23 opt_val: 6.87
+[TEST] f24 Score: 0.6850804150437282
+[TEST] f24 gbest_f: 278.1948351475887
+[TEST] f24 initial_gbest_f: 660.1645108506654
+[TEST] f24 opt_val: 102.61
+[Seed 42] Mean Score: 0.9014 +/- 0.1160
+
+--- Testing with seed 43 ---
+[TEST] f3 Score: 0.9895348223545632
+[TEST] f3 gbest_f: -451.82294077294944
+[TEST] f3 initial_gbest_f: 518.9787954759558
+[TEST] f3 opt_val: -462.09
+[TEST] f4 Score: 0.9925201795289179
+[TEST] f4 gbest_f: -448.097043654875
+[TEST] f4 initial_gbest_f: 1408.6709894145636
+[TEST] f4 opt_val: -462.09
+[TEST] f6 Score: 0.984670792694485
+[TEST] f6 gbest_f: 14881.468241745019
+[TEST] f6 initial_gbest_f: 968485.7321321546
+[TEST] f6 opt_val: 35.9
+[TEST] f7 Score: 0.9639120779230013
+[TEST] f7 gbest_f: 122.43085516359567
+[TEST] f7 initial_gbest_f: 910.1346032435085
+[TEST] f7 opt_val: 92.94
+[TEST] f9 Score: 0.9997166631933218
+[TEST] f9 gbest_f: 146.71763052436293
+[TEST] f9 initial_gbest_f: 80902.71218156583
+[TEST] f9 opt_val: 123.83
+[TEST] f13 Score: 0.8976582522747258
+[TEST] f13 gbest_f: 224.14331591419463
+[TEST] f13 initial_gbest_f: 1927.273106796972
+[TEST] f13 opt_val: 29.97
+[TEST] f14 Score: 0.9907280436228457
+[TEST] f14 gbest_f: -51.82862875800131
+[TEST] f14 initial_gbest_f: 3.880985219400735
+[TEST] f14 opt_val: -52.35
+[TEST] f16 Score: 0.5856606002473033
+[TEST] f16 gbest_f: 89.32355387403047
+[TEST] f16 initial_gbest_f: 114.72881911485655
+[TEST] f16 opt_val: 71.35
+[TEST] f17 Score: 0.9650179988767996
+[TEST] f17 gbest_f: -15.93583074125458
+[TEST] f17 initial_gbest_f: 11.765312060591263
+[TEST] f17 opt_val: -16.94
+[TEST] f18 Score: 0.9639534877921367
+[TEST] f18 gbest_f: -12.582723261776845
+[TEST] f18 initial_gbest_f: 103.93928821231832
+[TEST] f18 opt_val: -16.94
+[TEST] f19 Score: 0.7736313972754467
+[TEST] f19 gbest_f: -97.05908095351697
+[TEST] f19 initial_gbest_f: -78.29346008945237
+[TEST] f19 opt_val: -102.55
+[TEST] f20 Score: 0.999976659476848
+[TEST] f20 gbest_f: -544.9226515515497
+[TEST] f20 initial_gbest_f: 67033.3240759451
+[TEST] f20 opt_val: -546.5
+[TEST] f21 Score: 0.9735362520390725
+[TEST] f21 gbest_f: 42.89869216853872
+[TEST] f21 initial_gbest_f: 120.84017030039966
+[TEST] f21 opt_val: 40.78
+[TEST] f22 Score: 0.7439192149604045
+[TEST] f22 gbest_f: -979.3007599897749
+[TEST] f22 initial_gbest_f: -919.1691012387962
+[TEST] f22 opt_val: -1000.0
+[TEST] f23 Score: 0.6355853953173628
+[TEST] f23 gbest_f: 9.308889266490812
+[TEST] f23 initial_gbest_f: 13.562622181305827
+[TEST] f23 opt_val: 6.87
+[TEST] f24 Score: 0.73478040057301
+[TEST] f24 gbest_f: 261.5694206912899
+[TEST] f24 initial_gbest_f: 701.9602027554657
+[TEST] f24 opt_val: 102.61
+[Seed 43] Mean Score: 0.8872 +/- 0.1377
+
+--- Testing with seed 44 ---
+[TEST] f3 Score: 0.9884326099456832
+[TEST] f3 gbest_f: -453.0763289149078
+[TEST] f3 initial_gbest_f: 317.14118722260395
+[TEST] f3 opt_val: -462.09
+[TEST] f4 Score: 0.9633557496071771
+[TEST] f4 gbest_f: -420.16598504029315
+[TEST] f4 initial_gbest_f: 681.9916638431744
+[TEST] f4 opt_val: -462.09
+[TEST] f6 Score: 0.9997958445644872
+[TEST] f6 gbest_f: 150.738766935662
+[TEST] f6 initial_gbest_f: 562542.4364887165
+[TEST] f6 opt_val: 35.9
+[TEST] f7 Score: 0.9423432434018246
+[TEST] f7 gbest_f: 146.99651194744555
+[TEST] f7 initial_gbest_f: 1030.497280999678
+[TEST] f7 opt_val: 92.94
+[TEST] f9 Score: 0.9993000495098586
+[TEST] f9 gbest_f: 184.49054248959322
+[TEST] f9 initial_gbest_f: 86787.87744905047
+[TEST] f9 opt_val: 123.83
+[TEST] f13 Score: 0.7875095588016213
+[TEST] f13 gbest_f: 461.57283042596896
+[TEST] f13 initial_gbest_f: 2061.1335101883446
+[TEST] f13 opt_val: 29.97
+[TEST] f14 Score: 0.9906127557420573
+[TEST] f14 gbest_f: -51.724016474856484
+[TEST] f14 initial_gbest_f: 14.334482468202076
+[TEST] f14 opt_val: -52.35
+[TEST] f16 Score: 0.6564266912143061
+[TEST] f16 gbest_f: 85.55746995703281
+[TEST] f16 initial_gbest_f: 112.70207710763938
+[TEST] f16 opt_val: 71.35
+[TEST] f17 Score: 0.9840976608571587
+[TEST] f17 gbest_f: -16.702556136061453
+[TEST] f17 initial_gbest_f: -2.0086202950565823
+[TEST] f17 opt_val: -16.94
+[TEST] f18 Score: 0.9375432418436701
+[TEST] f18 gbest_f: -12.938380490733945
+[TEST] f18 initial_gbest_f: 47.13024039336078
+[TEST] f18 opt_val: -16.94
+[TEST] f19 Score: 0.7977894233614732
+[TEST] f19 gbest_f: -96.94369062198285
+[TEST] f19 initial_gbest_f: -74.82489545198703
+[TEST] f19 opt_val: -102.55
+[TEST] f20 Score: 0.9999726938185739
+[TEST] f20 gbest_f: -545.0315171018931
+[TEST] f20 initial_gbest_f: 53231.90552626528
+[TEST] f20 opt_val: -546.5
+[TEST] f21 Score: 0.9614765534529618
+[TEST] f21 gbest_f: 43.95111499650779
+[TEST] f21 initial_gbest_f: 123.09649244144792
+[TEST] f21 opt_val: 40.78
+[TEST] f22 Score: 0.9699474092398963
+[TEST] f22 gbest_f: -997.4837866519498
+[TEST] f22 initial_gbest_f: -916.2729972887862
+[TEST] f22 opt_val: -1000.0
+[TEST] f23 Score: 0.49131281287555884
+[TEST] f23 gbest_f: 9.108875480939366
+[TEST] f23 initial_gbest_f: 11.271281450778247
+[TEST] f23 opt_val: 6.87
+[TEST] f24 Score: 0.7553481493564199
+[TEST] f24 gbest_f: 259.4168798531118
+[TEST] f24 initial_gbest_f: 743.54886655922
+[TEST] f24 opt_val: 102.61
+[Seed 44] Mean Score: 0.8891 +/- 0.1452
+
+--- Testing with seed 45 ---
+[TEST] f3 Score: 0.9863126434182001
+[TEST] f3 gbest_f: -454.0997729201114
+[TEST] f3 initial_gbest_f: 121.676999284092
+[TEST] f3 opt_val: -462.09
+[TEST] f4 Score: 0.9855060112273353
+[TEST] f4 gbest_f: -446.00621604444365
+[TEST] f4 initial_gbest_f: 647.5965195514618
+[TEST] f4 opt_val: -462.09
+[TEST] f6 Score: 0.9875120264115022
+[TEST] f6 gbest_f: 7323.2953211921385
+[TEST] f6 initial_gbest_f: 583588.9696432786
+[TEST] f6 opt_val: 35.9
+[TEST] f7 Score: 0.9851719556321855
+[TEST] f7 gbest_f: 107.86541115413553
+[TEST] f7 initial_gbest_f: 1099.5063943204987
+[TEST] f7 opt_val: 92.94
+[TEST] f9 Score: 0.9986178072580201
+[TEST] f9 gbest_f: 258.9281274604545
+[TEST] f9 initial_gbest_f: 97865.71747868223
+[TEST] f9 opt_val: 123.83
+[TEST] f13 Score: 0.8127189521605017
+[TEST] f13 gbest_f: 419.7359397906745
+[TEST] f13 initial_gbest_f: 2111.151968421641
+[TEST] f13 opt_val: 29.97
+[TEST] f14 Score: 0.9601964673717583
+[TEST] f14 gbest_f: -50.9496849690066
+[TEST] f14 initial_gbest_f: -17.16932787041506
+[TEST] f14 opt_val: -52.35
+[TEST] f16 Score: 0.6972213004037265
+[TEST] f16 gbest_f: 84.31370120796689
+[TEST] f16 initial_gbest_f: 114.16576354364673
+[TEST] f16 opt_val: 71.35
+[TEST] f17 Score: 0.9654997484326698
+[TEST] f17 gbest_f: -16.315559688131717
+[TEST] f17 initial_gbest_f: 1.1595872058972176
+[TEST] f17 opt_val: -16.94
+[TEST] f18 Score: 0.9879963927575589
+[TEST] f18 gbest_f: -16.046834434700372
+[TEST] f18 initial_gbest_f: 57.468096438015834
+[TEST] f18 opt_val: -16.94
+[TEST] f19 Score: 0.793433010551306
+[TEST] f19 gbest_f: -97.19467486958025
+[TEST] f19 initial_gbest_f: -76.62463242451007
+[TEST] f19 opt_val: -102.55
+[TEST] f20 Score: 0.9999838889701984
+[TEST] f20 gbest_f: -545.2138675708813
+[TEST] f20 initial_gbest_f: 79282.81227591862
+[TEST] f20 opt_val: -546.5
+[TEST] f21 Score: 0.9687715585964264
+[TEST] f21 gbest_f: 43.31693024027878
+[TEST] f21 initial_gbest_f: 122.01781163117757
+[TEST] f21 opt_val: 40.78
+[TEST] f22 Score: 0.805948079426371
+[TEST] f22 gbest_f: -983.9132982306782
+[TEST] f22 initial_gbest_f: -917.1010432580692
+[TEST] f22 opt_val: -1000.0
+[TEST] f23 Score: 0.616507809580361
+[TEST] f23 gbest_f: 9.424648475112061
+[TEST] f23 initial_gbest_f: 13.531539762561055
+[TEST] f23 opt_val: 6.87
+[TEST] f24 Score: 0.7014419391180295
+[TEST] f24 gbest_f: 251.1863025953383
+[TEST] f24 initial_gbest_f: 600.2562606852047
+[TEST] f24 opt_val: 102.61
+[Seed 45] Mean Score: 0.8908 +/- 0.1268
+
+--- Testing with seed 46 ---
+[TEST] f3 Score: 0.9811638419162599
+[TEST] f3 gbest_f: -448.9080459454589
+[TEST] f3 initial_gbest_f: 237.73179996249354
+[TEST] f3 opt_val: -462.09
+[TEST] f4 Score: 0.9675311528709015
+[TEST] f4 gbest_f: -431.54381282215826
+[TEST] f4 initial_gbest_f: 478.69447123139065
+[TEST] f4 opt_val: -462.09
+[TEST] f6 Score: 0.9987359705070452
+[TEST] f6 gbest_f: 872.6762035694871
+[TEST] f6 initial_gbest_f: 662026.943906304
+[TEST] f6 opt_val: 35.9
+[TEST] f7 Score: 0.9721697618428649
+[TEST] f7 gbest_f: 132.40809359508665
+[TEST] f7 initial_gbest_f: 1511.1130451691392
+[TEST] f7 opt_val: 92.94
+[TEST] f9 Score: 0.999763044133672
+[TEST] f9 gbest_f: 150.6414523139971
+[TEST] f9 initial_gbest_f: 113273.39126421872
+[TEST] f9 opt_val: 123.83
+[TEST] f13 Score: 0.8027303256956504
+[TEST] f13 gbest_f: 443.08030586157633
+[TEST] f13 initial_gbest_f: 2124.1099498851804
+[TEST] f13 opt_val: 29.97
+[TEST] f14 Score: 0.9574728648648502
+[TEST] f14 gbest_f: -50.8354205409358
+[TEST] f14 initial_gbest_f: -16.735575133360882
+[TEST] f14 opt_val: -52.35
+[TEST] f16 Score: 0.5598702865260957
+[TEST] f16 gbest_f: 86.92846377634083
+[TEST] f16 initial_gbest_f: 106.74516487851143
+[TEST] f16 opt_val: 71.35
+[TEST] f17 Score: 0.9751469349667686
+[TEST] f17 gbest_f: -16.360995482084974
+[TEST] f17 initial_gbest_f: 6.357107102919969
+[TEST] f17 opt_val: -16.94
+[TEST] f18 Score: 0.9628041356457715
+[TEST] f18 gbest_f: -14.25326363489326
+[TEST] f18 initial_gbest_f: 55.29212611810978
+[TEST] f18 opt_val: -16.94
+[TEST] f19 Score: 0.8005795496863941
+[TEST] f19 gbest_f: -97.44384686209382
+[TEST] f19 initial_gbest_f: -76.94503757073906
+[TEST] f19 opt_val: -102.55
+[TEST] f20 Score: 0.9999844533487702
+[TEST] f20 gbest_f: -545.5502710675026
+[TEST] f20 initial_gbest_f: 60542.47140985372
+[TEST] f20 opt_val: -546.5
+[TEST] f21 Score: 0.9568461896385506
+[TEST] f21 gbest_f: 43.97392950058219
+[TEST] f21 initial_gbest_f: 114.79268796035257
+[TEST] f21 opt_val: 40.78
+[TEST] f22 Score: 0.9762112306934326
+[TEST] f22 gbest_f: -998.0390644873432
+[TEST] f22 initial_gbest_f: -917.5688541350728
+[TEST] f22 opt_val: -1000.0
+[TEST] f23 Score: 0.45477870254052816
+[TEST] f23 gbest_f: 9.282842332286611
+[TEST] f23 initial_gbest_f: 11.295436686955476
+[TEST] f23 opt_val: 6.87
+[TEST] f24 Score: 0.742534601967339
+[TEST] f24 gbest_f: 235.90952459588067
+[TEST] f24 initial_gbest_f: 620.3476284908421
+[TEST] f24 opt_val: 102.61
+[Seed 46] Mean Score: 0.8818 +/- 0.1622
+
+============================================================
+Overall Results for bbob_unconstrained
+============================================================
+Mean Score: 0.8901 +/- 0.0064
+Per-seed means: ['0.9014', '0.8872', '0.8891', '0.8908', '0.8818']
+  f3_i1: 0.9863 +/- 0.0029
+  f4_i1: 0.9770 +/- 0.0109
+  f6_i1: 0.9941 +/- 0.0066
+  f7_i1: 0.9696 +/- 0.0158
+  f9_i1: 0.9992 +/- 0.0005
+  f13_i1: 0.8441 +/- 0.0538
+  f14_i1: 0.9712 +/- 0.0159
+  f16_i1: 0.6251 +/- 0.0490
+  f17_i1: 0.9691 +/- 0.0098
+  f18_i1: 0.9518 +/- 0.0276
+  f19_i1: 0.8065 +/- 0.0317
   f20_i1: 1.0000 +/- 0.0000
-  f21_i1: 0.9479 +/- 0.0342
-  f22_i1: 0.9017 +/- 0.0968
-  f23_i1: 0.5934 +/- 0.0788
-  f24_i1: 0.7258 +/- 0.0444
+  f21_i1: 0.9353 +/- 0.0600
+  f22_i1: 0.8971 +/- 0.1019
+  f23_i1: 0.5906 +/- 0.1077
+  f24_i1: 0.7238 +/- 0.0263
 
-Results saved to /hada/baselines/bbob_unconstrained/outputs/dqn_de_results.json
+Report saved to /hada/outputs/initial_bbob_unconstrained_0/report.json
 Predictions saved to /hada/outputs/initial_bbob_unconstrained_0/predictions.csv
-  Training curve saved for seed 42: /hada/baselines/bbob_unconstrained/outputs/dqn_de_training_seed42.png
-Cleaned up model cache: /hada/metabbo/dqn_model.pt
-{
-  "score": 0.8768993807115569,
-  "mean_gbest_f": 0.0,
-  "total": 16,
-  "mean_score": 0.8768993807115569
-}
+Return curve saved to /hada/outputs/initial_bbob_unconstrained_0/bbob_unconstrained_return_curves.png
+Loss curve saved to /hada/outputs/initial_bbob_unconstrained_0/bbob_unconstrained_loss_curves.png
