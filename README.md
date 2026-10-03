@@ -1,11 +1,25 @@
 # Hyper Algorithm Design Agent (HADA)
 ![pic](./intro.png)
 
-This repo provides the implementation of HADA (Hyper Algorithm Design Agent). HADA automates the design of Meta-Black-Box Optimization (MetaBBO) algorithms through open-ended recursive program evolution. We provide following step-by-step instructions for you to try HADA on your PC or Server.
+This repo provides the implementation of HADA (Hyper Algorithm Design Agent). HADA automates the design of Meta-Black-Box Optimization (MetaBBO) algorithms through open-ended recursive program evolution. 
+
+
+HADA's paper is available [here](https://arxiv.org/abs/2609.35328). Consider cite it if necessary.
+
+```latex
+@article{yu2026hyper,
+  title={Hyper Algorithm Design Agent: Evolving Learnable Optimizer from Zero},
+  author={Yu, Zipei and Gong, Yue-Jiao and Ma, Zeyuan and Jiang, Yuncheng and Cao, Zhiguang},
+  journal={arXiv preprint arXiv:2609.35328},
+  year={2026}
+}
+```
+
+We provide following step-by-step instructions for you to try HADA on your PC or Server. [Raise issues](https://github.com/MetaEvo/HADA-AAD/issues/new) if any problem happens during the using.
 
 ## Quick Start
 
-### 0. Prepare a ubuntu 24.04.4 LTS system
+### 0. Prepare a ubuntu system (empirically, the version of the ubuntu doesn't matter), we use 24.04.4 LTS in our paper. 
 
 
 ### 1. Prepare your API Key
